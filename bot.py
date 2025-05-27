@@ -7,7 +7,7 @@ from telegram.ext import (
     ConversationHandler,
     filters
 )
-from database import init_db, get_session, PokerGame
+from database import init_db, get_session, PokerGame, Player
 from datetime import datetime
 import logging
 from collections import defaultdict
@@ -28,6 +28,9 @@ PLAYERS = ['Данила Бадецкий', 'Данил 72 Сергеев', 'С�
             'Слава Харьков', 'Дмитрий Бедарев', 'Дмитрий Ляпин', 'Максим Мерзлый',
             'Максим Гомозов', 'Богдан Светоносов', 'Евгений Черницкий', 'Роман Р']
 
+PARTICIPANTS_REQUEST_START_DATE = datetime.strptime('27.05.2025', '%d.%m.%Y').date()
+
+
 # Состояния бота
 (
     MAIN_MENU,
@@ -44,8 +47,10 @@ PLAYERS = ['Данила Бадецкий', 'Данил 72 Сергеев', 'С�
     PLAYER_STATS,
     DELETE_GAME,
     DELETE_GAME_SELECT,
-    PLAYER_STATS
-) = range(15)
+    PLAYER_STATS,
+    ADD_PLAYERS,
+    CONFIRM_PLAYERS
+) = range(17)
 
 # Создаем клавиатуры
 def get_main_keyboard():
@@ -275,13 +280,87 @@ async def add_second_place(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if update.message.text not in PLAYERS:
         await update.message.reply_text("Пожалуйста, выберите игрока из списка:")
         return ADD_SECOND_PLACE
-    
+
     context.user_data['second_place'] = update.message.text
+
+    # Проверяем, нужно ли запрашивать участников
+    if context.user_data['game_date'] >= PARTICIPANTS_REQUEST_START_DATE:
+        # Исключаем победителя и игрока, занявшего второе место, из списка доступных участников
+        available_players = [player for player in PLAYERS if player not in [context.user_data['winner'], context.user_data['second_place']]]
+
+        keyboard = ReplyKeyboardMarkup([[player] for player in available_players] + [['Отмена']], resize_keyboard=True)
+
+        await update.message.reply_text(
+            "Выберите участников игры (выберите из списка):",
+            reply_markup=keyboard
+        )
+        return CONFIRM_PLAYERS
+    else:
+        # Инициализируем пустой список участников, если участники не выбираются
+        context.user_data['selected_players'] = []
+        await update.message.reply_text("Введите количество ребаев:")
+        return ADD_REBUYS
+
+
+async def add_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['selected_players'] = []
+
+    # Исключаем победителя и игрока, занявшего второе место, из списка доступных участников
+    available_players = [player for player in PLAYERS if player not in [context.user_data['winner'], context.user_data['second_place']]]
+
+    keyboard = ReplyKeyboardMarkup([[player] for player in available_players] + [['Отмена']], resize_keyboard=True)
+
     await update.message.reply_text(
-        "Введите количество ребаев:",
-        reply_markup=ReplyKeyboardRemove()  
+        "Выберите участников игры (выберите из списка):",
+        reply_markup=keyboard
     )
-    return ADD_REBUYS
+    return CONFIRM_PLAYERS
+
+
+async def confirm_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    selected_player = update.message.text
+
+    if selected_player not in PLAYERS:
+        await update.message.reply_text("Пожалуйста, выберите игрока из списка:")
+        return CONFIRM_PLAYERS
+
+    if 'selected_players' not in context.user_data:
+        context.user_data['selected_players'] = []
+
+    if selected_player not in context.user_data['selected_players']:
+        context.user_data['selected_players'].append(selected_player)
+
+    # Проверяем, выбрано ли достаточное количество участников
+    total_players = len(context.user_data['selected_players']) + 2  # +2 для победителя и второго места
+    if total_players >= context.user_data['players_count']:
+        await update.message.reply_text(
+            f"Выбранные участники: {', '.join(context.user_data['selected_players'])}\n"
+            "Введите количество ребаев:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ADD_REBUYS
+
+    available_players = [player for player in PLAYERS if player not in [context.user_data['winner'], context.user_data['second_place']] + context.user_data['selected_players']]
+
+    keyboard = ReplyKeyboardMarkup([[player] for player in available_players] + [['Отмена']], resize_keyboard=True)
+
+    await update.message.reply_text(
+        f"Выбранные участники: {', '.join(context.user_data['selected_players'])}\n"
+        "Выберите еще одного участника:",
+        reply_markup=keyboard
+    )
+    return CONFIRM_PLAYERS
+
+async def players_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text == 'Готово':
+        await update.message.reply_text(
+            f"Выбранные участники: {', '.join(context.user_data['selected_players'])}\n\n"
+            "Введите количество ребаев:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ADD_REBUYS
+    else:
+        return await confirm_players(update, context)
 
 async def add_rebuys(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
@@ -324,11 +403,17 @@ async def add_big_blind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def add_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     description = update.message.text if update.message.text != '-' else None
-    
+
+    # Инициализируем список выбранных участников, если его нет
+    selected_players = context.user_data.get('selected_players', [])
+
+    # Добавляем победителя и игрока, занявшего второе место, в список участников
+    selected_players = selected_players + [context.user_data['winner'], context.user_data['second_place']]
+
     game = PokerGame(
         date=context.user_data['game_date'],
         city=context.user_data['city'],
-        players_count=context.user_data['players_count'],
+        players_count=len(selected_players),
         winner=context.user_data['winner'],
         second_place=context.user_data['second_place'],
         rebuys=context.user_data['rebuys'],
@@ -337,10 +422,18 @@ async def add_description(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         big_blind=context.user_data['big_blind'],
         description=description
     )
-    
+
+    # Получаем или создаем игроков в базе данных
+    for player_name in selected_players:
+        player = session.query(Player).filter_by(name=player_name).first()
+        if not player:
+            player = Player(name=player_name)
+            session.add(player)
+        game.players.append(player)
+
     session.add(game)
     session.commit()
-    
+
     await update.message.reply_text(
         "Игра успешно добавлена!\n"
         f"Дата: {game.date.strftime('%d.%m.%Y')}\n"
@@ -352,6 +445,8 @@ async def add_description(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         reply_markup=get_main_keyboard()
     )
     return MAIN_MENU
+
+
 
 async def show_recent_games(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     games = session.query(PokerGame).order_by(PokerGame.date.desc()).limit(5).all()
@@ -383,39 +478,67 @@ async def player_stats_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def show_player_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     player_name = update.message.text
-    
+
     if player_name.lower() == 'все':
         return await show_all_stats(update, context)
-    
-    wins = session.query(PokerGame).filter(PokerGame.winner == player_name).order_by(PokerGame.date.desc()).all()
-    seconds = session.query(PokerGame).filter(PokerGame.second_place == player_name).order_by(PokerGame.date.desc()).all()
-    
+
+    # Получаем все игры, в которых участвовал игрок, отсортированные по дате в порядке убывания
+    games_participated = session.query(PokerGame).join(PokerGame.players).filter(
+        Player.name == player_name
+    ).order_by(PokerGame.date.desc()).all()
+
+    # Получаем победы и вторые места по всем играм
+    wins_all = [game for game in games_participated if game.winner == player_name]
+    seconds_all = [game for game in games_participated if game.second_place == player_name]
+
+    # Получаем победы и вторые места только после определенной даты
+    wins = [game for game in games_participated if game.winner == player_name and game.date >= PARTICIPANTS_REQUEST_START_DATE]
+    seconds = [game for game in games_participated if game.second_place == player_name and game.date >= PARTICIPANTS_REQUEST_START_DATE]
+
+    total_games_participated = len([game for game in games_participated if game.date >= PARTICIPANTS_REQUEST_START_DATE])
+    total_wins = len(wins)
+    total_seconds = len(seconds)
+    total_top2 = total_wins + total_seconds
+
+    # Рассчитываем общий банк, который был выигран игроком по всем играм
+    total_bank_won_all = sum(game.bank for game in wins_all)
+
+    # Рассчитываем проценты
+    win_rate_top2 = (total_top2 / total_games_participated * 100) if total_games_participated > 0 else 0
+    win_rate_wins = (total_wins / total_games_participated * 100) if total_games_participated > 0 else 0
+
     response = (
         f"📊 Статистика игрока {player_name}:\n"
-        f"🏆 Побед: {len(wins)}\n"
-        f"🥈 Вторых мест: {len(seconds)}\n\n"
+        "Статистика за все время:\n"
+        f"🏆 Побед: {len(wins_all)}\n"
+        f"🥈 Вторых мест: {len(seconds_all)}\n"
+        f"💰 Общий банк, который был выигран: {total_bank_won_all}\n"
+        "Актуальная статистика для игр после 27 мая 2025 года:\n"
+        f"🎯 Попаданий в топ 2: {total_top2}/{total_games_participated}\n"
+        f"📈 Винрейт (топ 2): {win_rate_top2:.2f}%\n"
+        f"📈 Винрейт (победы): {win_rate_wins:.2f}%\n\n"
     )
-    
-    if wins:
+
+    if wins_all:
         response += "Последние победы:\n"
-        for i, game in enumerate(wins[:3], 1):  # Показываем 3 последние победы
+        for i, game in enumerate(wins_all[:3], 1):  # Показываем 3 последние победы по всем играм
             response += (
                 f"{i}. {game.date.strftime('%d.%m.%Y')} - {game.city}\n"
                 f"   Банк: {game.bank}\n"
             )
         response += "\n"
-    
-    if seconds:
+
+    if seconds_all:
         response += "Последние 2 места:\n"
-        for i, game in enumerate(seconds[:3], 1):  # Показываем 3 последних вторых места
+        for i, game in enumerate(seconds_all[:3], 1):  # Показываем 3 последних вторых места по всем играм
             response += (
                 f"{i}. {game.date.strftime('%d.%m.%Y')} - {game.city}\n"
                 f"   Победитель: {game.winner}\n"
             )
-    
-    if not wins and not seconds:
+
+    if not games_participated:
         response += "Игр с участием этого игрока не найдено."
-    
+
     await update.message.reply_text(
         response,
         reply_markup=get_main_keyboard(),
@@ -425,29 +548,52 @@ async def show_player_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def show_all_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     all_games = session.query(PokerGame).all()
-    
+
     stats = {}
     for game in all_games:
-        if game.winner not in stats:
-            stats[game.winner] = {'wins': 0, 'seconds': 0}
-        stats[game.winner]['wins'] += 1
-        
-        if game.second_place not in stats:
-            stats[game.second_place] = {'wins': 0, 'seconds': 0}
-        stats[game.second_place]['seconds'] += 1
-    
+        for player in game.players:
+            if player.name not in stats:
+                stats[player.name] = {'wins_all': 0, 'seconds_all': 0, 'total_bank_won_all': 0, 'wins': 0, 'seconds': 0, 'total_games': 0, 'total_bank_won': 0}
+
+            # Считаем победы, вторые места и банк по всем играм
+            if game.winner == player.name:
+                stats[player.name]['wins_all'] += 1
+                stats[player.name]['total_bank_won_all'] += game.bank
+            if game.second_place == player.name:
+                stats[player.name]['seconds_all'] += 1
+
+            # Считаем попадания в топ 2 и винрейты только с указанной даты
+            if game.date >= PARTICIPANTS_REQUEST_START_DATE:
+                stats[player.name]['total_games'] += 1
+
+                if game.winner == player.name:
+                    stats[player.name]['wins'] += 1
+                    stats[player.name]['total_bank_won'] += game.bank
+                elif game.second_place == player.name:
+                    stats[player.name]['seconds'] += 1
+
     if not stats:
         await update.message.reply_text("В базе нет данных об играх.")
         return MAIN_MENU
-    
+
     response = "📊 Общая статистика всех игроков:\n\n"
     for player, data in sorted(stats.items(), key=lambda x: (x[1]['wins'], x[1]['seconds']), reverse=True):
+        total_top2 = data['wins'] + data['seconds']
+        win_rate_top2 = (total_top2 / data['total_games'] * 100) if data['total_games'] > 0 else 0
+        win_rate_wins = (data['wins'] / data['total_games'] * 100) if data['total_games'] > 0 else 0
+
         response += (
             f"👤 *{player}*\n"
-            f"🏆 Побед: {data['wins']} | "
-            f"🥈 Вторых мест: {data['seconds']}\n\n"
+            "Статистика за все время:\n"
+            f"🏆 Побед: {data['wins_all']} | "
+            f"🥈 Вторых мест: {data['seconds_all']}\n"
+            f"💰 Общий банк, который был выигран: {data['total_bank_won_all']}\n"
+            "Актуальная статистика для игр после 27 мая 2025 года:\n"
+            f"🎯 Попаданий в топ 2: {total_top2}/{data['total_games']}\n"
+            f"📈 Винрейт (топ 2): {win_rate_top2:.2f}% | "
+            f"📈 Винрейт (победы): {win_rate_wins:.2f}%\n\n"
         )
-    
+
     await update.message.reply_text(
         response,
         reply_markup=get_main_keyboard(),
@@ -494,7 +640,7 @@ async def search_game(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return MAIN_MENU
 
 def main() -> None:
-    application = Application.builder().token("TOKEN").build()
+    application = Application.builder().token("token").build()
     
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
@@ -524,6 +670,14 @@ def main() -> None:
             ],
             ADD_SECOND_PLACE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_second_place),
+                MessageHandler(filters.Regex('^Отмена$'), cancel),
+            ],
+            ADD_PLAYERS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_players),
+                MessageHandler(filters.Regex('^Отмена$'), cancel),
+            ],
+            CONFIRM_PLAYERS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_players),
                 MessageHandler(filters.Regex('^Отмена$'), cancel),
             ],
             ADD_REBUYS: [
