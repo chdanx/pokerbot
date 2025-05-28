@@ -7,7 +7,7 @@ from telegram.ext import (
     ConversationHandler,
     filters
 )
-from database import init_db, get_session, PokerGame, Player
+from database import init_db, get_session, PokerGame, Player, generate_pie_chart_stats, game_players_association
 from datetime import datetime
 import logging
 from collections import defaultdict
@@ -69,7 +69,7 @@ def get_players_keyboard():
 async def check_cancel(update: Update, text: str) -> bool:
     if text == 'Отмена':
         await update.message.reply_text(
-            "Действие отменено. Возвращаемся в главное меню.",
+            "ℹ️ Действие отменено. Возвращаемся в главное меню.",
             reply_markup=get_main_keyboard()
         )
         return True
@@ -110,7 +110,7 @@ async def delete_game_execute(update: Update, context: ContextTypes.DEFAULT_TYPE
             keyboard = []
             context.user_data['delete_options'] = {}
             
-            response = "Выберите игру для удаления:\n\n"
+            response = "✏️ Выберите игру для удаления:\n\n"
             for i, game in enumerate(games, 1):
                 response += f"{i}. {game.date.strftime('%d.%m.%Y')} - {game.winner}\n"
                 keyboard.append([str(i)])
@@ -179,7 +179,7 @@ async def delete_game_select(update: Update, context: ContextTypes.DEFAULT_TYPE)
             
         choice = update.message.text.strip()
         if choice not in context.user_data['delete_options']:
-            await update.message.reply_text("Выберите номер из списка")
+            await update.message.reply_text("✏️ Выберите номер из списка")
             return DELETE_GAME_SELECT
             
         game_id = context.user_data['delete_options'][choice]
@@ -210,7 +210,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await context.bot.send_photo(
             chat_id=update.effective_chat.id,
             photo=InputFile(photo),
-            caption="Приветствую! Добро пожаловать в бот учета наших покерных игр. Тут будет статистика",
+            caption="👋 Приветствую! Добро пожаловать в бот учета наших покерных игр.",
             reply_markup=get_main_keyboard()
         )
     return MAIN_MENU
@@ -226,7 +226,7 @@ async def add_game_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Очищаем предыдущие данные
     context.user_data.clear()
     await update.message.reply_text(
-        "Введите дату игры (ДД.ММ.ГГГГ):",
+        "✏️ Введите дату игры (ДД.ММ.ГГГГ):",
         reply_markup=ReplyKeyboardMarkup([['Отмена']], resize_keyboard=True)
     )
     return ADD_DATE
@@ -239,7 +239,7 @@ async def add_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         date_obj = datetime.strptime(update.message.text, '%d.%m.%Y').date()
         context.user_data['game_date'] = date_obj
         await update.message.reply_text(
-            "Выберите город:",
+            "✏️ Выберите город:",
             reply_markup=get_cities_keyboard()
         )
         return ADD_CITY
@@ -257,7 +257,7 @@ async def add_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     context.user_data['city'] = update.message.text
     await update.message.reply_text(
-        "Введите количество игроков:",
+        "✏️ Введите количество игроков:",
         reply_markup=ReplyKeyboardRemove()  
     )
     return ADD_PLAYERS_COUNT
@@ -274,12 +274,12 @@ async def add_players_count(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             
         context.user_data['players_count'] = players_count
         await update.message.reply_text(
-            "Выберите победителя:",
+            "✏️ Выберите победителя:",
             reply_markup=get_players_keyboard()
         )
         return ADD_WINNER
     except ValueError:
-        await update.message.reply_text("Введите число:")
+        await update.message.reply_text("✏️ Введите число:")
         return ADD_PLAYERS_COUNT
 
 async def add_winner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -292,7 +292,7 @@ async def add_winner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     context.user_data['winner'] = update.message.text
     await update.message.reply_text(
-        "Выберите занявшего 2 место:",
+        "✏️ Выберите занявшего 2 место:",
         reply_markup=get_players_keyboard()
     )
     return ADD_SECOND_PLACE
@@ -309,20 +309,13 @@ async def add_second_place(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     # Проверяем, нужно ли запрашивать участников
     if context.user_data['game_date'] >= PARTICIPANTS_REQUEST_START_DATE:
-        # Исключаем победителя и игрока, занявшего второе место, из списка доступных участников
         available_players = [player for player in PLAYERS if player not in [context.user_data['winner'], context.user_data['second_place']]]
-
         keyboard = ReplyKeyboardMarkup([[player] for player in available_players] + [['Отмена']], resize_keyboard=True)
-
-        await update.message.reply_text(
-            "Выберите участников игры (выберите из списка):",
-            reply_markup=keyboard
-        )
+        await update.message.reply_text("✏️ Выберите участников игры (выберите из списка):", reply_markup=keyboard)
         return CONFIRM_PLAYERS
     else:
-        # Инициализируем пустой список участников, если участники не выбираются
-        context.user_data['selected_players'] = []
-        await update.message.reply_text("Введите количество ребаев:")
+        # Для старых игр просто переходим к следующему шагу
+        await update.message.reply_text("✏️ Введите количество ребаев:")
         return ADD_REBUYS
 
 
@@ -338,7 +331,7 @@ async def add_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     keyboard = ReplyKeyboardMarkup([[player] for player in available_players] + [['Отмена']], resize_keyboard=True)
 
     await update.message.reply_text(
-        "Выберите участников игры (выберите из списка):",
+        "📌 Выберите участников игры (выберите из списка):",
         reply_markup=keyboard
     )
     return CONFIRM_PLAYERS
@@ -361,8 +354,8 @@ async def confirm_players(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     total_players = len(context.user_data['selected_players']) + 2  # +2 для победителя и второго места
     if total_players >= context.user_data['players_count']:
         await update.message.reply_text(
-            f"Выбранные участники: {', '.join(context.user_data['selected_players'])}\n"
-            "Введите количество ребаев:",
+            f"ℹ️ Выбранные участники: {', '.join(context.user_data['selected_players'])}\n\n"
+            "✏️ Введите количество ребаев:",
             reply_markup=ReplyKeyboardRemove()
         )
         return ADD_REBUYS
@@ -382,7 +375,7 @@ async def players_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if update.message.text == 'Готово':
         await update.message.reply_text(
             f"Выбранные участники: {', '.join(context.user_data['selected_players'])}\n\n"
-            "Введите количество ребаев:",
+            "✏️ Введите количество ребаев:",
             reply_markup=ReplyKeyboardRemove()
         )
         return ADD_REBUYS
@@ -392,7 +385,7 @@ async def players_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def add_rebuys(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
         context.user_data['rebuys'] = int(update.message.text)
-        await update.message.reply_text("Введите стоимость бай-ина:")
+        await update.message.reply_text("✏️ Введите стоимость бай-ина:")
         return ADD_BUYIN
     except ValueError:
         await update.message.reply_text("Введите число:")
@@ -401,7 +394,7 @@ async def add_rebuys(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def add_buyin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
         context.user_data['buyin'] = float(update.message.text)
-        await update.message.reply_text("Введите количество бобиков:")
+        await update.message.reply_text("✏️ Введите количество бобиков:")
         return ADD_BIG_BLIND
     except ValueError:
         await update.message.reply_text("Введите число:")
@@ -419,8 +412,8 @@ async def add_big_blind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         context.user_data['bank'] = round(bank, 2)
         
         await update.message.reply_text(
-            f"Банк автоматически рассчитан: {context.user_data['bank']}\n"
-            "Введите описание (необязательно, или отправьте '-' чтобы пропустить):",
+            f"ℹ️ Банк автоматически рассчитан: {context.user_data['bank']}\n"
+            "✏️ Введите описание (необязательно, или отправьте '-' чтобы пропустить):",
             reply_markup=ReplyKeyboardRemove()  # Убираем клавиатуру
         )
         return ADD_DESCRIPTION
@@ -431,16 +424,11 @@ async def add_big_blind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def add_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     description = update.message.text if update.message.text != '-' else None
 
-    # Инициализируем список выбранных участников, если его нет
-    selected_players = context.user_data.get('selected_players', [])
-
-    # Добавляем победителя и игрока, занявшего второе место, в список участников
-    selected_players = selected_players + [context.user_data['winner'], context.user_data['second_place']]
-
+    # Создаем игру
     game = PokerGame(
         date=context.user_data['game_date'],
         city=context.user_data['city'],
-        players_count=len(selected_players),
+        players_count=context.user_data['players_count'],  # Сохраняем введенное количество игроков
         winner=context.user_data['winner'],
         second_place=context.user_data['second_place'],
         rebuys=context.user_data['rebuys'],
@@ -450,42 +438,70 @@ async def add_description(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         description=description
     )
 
-    # Получаем или создаем игроков в базе данных
-    for player_name in selected_players:
-        player = session.query(Player).filter_by(name=player_name).first()
-        if not player:
-            player = Player(name=player_name)
-            session.add(player)
-        game.players.append(player)
+    # Для игр после определенной даты добавляем участников
+    if context.user_data['game_date'] >= PARTICIPANTS_REQUEST_START_DATE:
+        selected_players = context.user_data.get('selected_players', [])
+        all_players = selected_players + [context.user_data['winner'], context.user_data['second_place']]
+        
+        # Проверяем соответствие количества
+        if len(all_players) != context.user_data['players_count']:
+            await update.message.reply_text(
+                f"Ошибка: количество участников ({len(all_players)}) не совпадает с указанным ({context.user_data['players_count']})",
+                reply_markup=get_main_keyboard()
+            )
+            return MAIN_MENU
+
+        # Добавляем игроков в игру
+        for player_name in all_players:
+            player = session.query(Player).filter_by(name=player_name).first()
+            if not player:
+                player = Player(name=player_name)
+                session.add(player)
+            game.players.append(player)
+    else:
+        # Для старых игр просто добавляем победителя и второго места
+        for player_name in [context.user_data['winner'], context.user_data['second_place']]:
+            player = session.query(Player).filter_by(name=player_name).first()
+            if not player:
+                player = Player(name=player_name)
+                session.add(player)
+            game.players.append(player)
 
     session.add(game)
     session.commit()
 
+    # Формируем сообщение
+    response = (
+        "✅ Игра успешно добавлена!\n\n"
+        f"📅 Дата: {game.date.strftime('%d.%m.%Y')}\n"
+        f"🏙 Город: {game.city}\n"
+        f"👥 Игроков: {game.players_count}\n"
+        f"🏆 Победитель: {game.winner}\n"
+        f"🥈 2 место: {game.second_place}\n"
+        f"💰 Банк: {game.bank}\n\n"
+    )
+
+    if context.user_data['game_date'] >= PARTICIPANTS_REQUEST_START_DATE:
+        response += f"Участники: {', '.join([p.name for p in game.players])}\n"
+
     await update.message.reply_text(
-        "Игра успешно добавлена!\n"
-        f"Дата: {game.date.strftime('%d.%m.%Y')}\n"
-        f"Город: {game.city}\n"
-        f"Игроков: {game.players_count}\n"
-        f"Победитель: {game.winner}\n"
-        f"2 место: {game.second_place}\n"
-        f"Банк: {game.bank}",
+        response,
         reply_markup=get_main_keyboard()
     )
     return MAIN_MENU
-
 
 
 async def show_recent_games(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     games = session.query(PokerGame).order_by(PokerGame.date.desc()).limit(5).all()
     
     if games:
-        response = "Последние 5 игр:\n\n"
+        response = "📌 Крайние 5 игр:\n\n"
         for i, game in enumerate(games, 1):
             response += (
-                f"{i}. {game.date.strftime('%d.%m.%Y')} - {game.city}\n"
-                f"   Игроков: {game.players_count}\n"
-                f"   Победитель: {game.winner}\n"
-                f"   2 место: {game.second_place}\n\n"
+                f"{game.date.strftime('%d.%m.%Y')} - {game.city}\n"
+                f"👤 Игроков: {game.players_count}\n"
+                f"🏆Победитель: {game.winner}\n"
+                f"🥈2 место: {game.second_place}\n\n"
             )
     else:
         response = "В базе пока нет игр."
@@ -498,13 +514,16 @@ async def show_recent_games(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def player_stats_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
-        "Введите имя игрока для статистики или 'все' для полной статистики:",
-        reply_markup=ReplyKeyboardMarkup([[player] for player in PLAYERS] + [['все', 'Отмена']], resize_keyboard=True)
+        "✏️ Введите имя игрока для статистики или 'все' для полной статистики:",
+        reply_markup=ReplyKeyboardMarkup([['все']] + [[player] for player in PLAYERS] + [['Отмена']], resize_keyboard=True)
     )
     return PLAYER_STATS
 
 async def show_player_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     player_name = update.message.text
+
+    if await check_cancel(update, update.message.text):
+        return MAIN_MENU
 
     if player_name.lower() == 'все':
         return await show_all_stats(update, context)
@@ -536,18 +555,18 @@ async def show_player_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     response = (
         f"📊 Статистика игрока {player_name}:\n"
-        "Статистика за все время:\n"
+        "ℹ️ Статистика за все время:\n"
         f"🏆 Побед: {len(wins_all)}\n"
         f"🥈 Вторых мест: {len(seconds_all)}\n"
         f"💰 Общий банк, который был выигран: {total_bank_won_all}\n"
-        "Актуальная статистика для игр после 27 мая 2025 года:\n"
+        "ℹ️ Актуальная статистика для игр после 27 мая 2025 года:\n"
         f"🎯 Попаданий в топ 2: {total_top2}/{total_games_participated}\n"
         f"📈 Винрейт (топ 2): {win_rate_top2:.2f}%\n"
         f"📈 Винрейт (победы): {win_rate_wins:.2f}%\n\n"
     )
 
     if wins_all:
-        response += "Последние победы:\n"
+        response += "🏆 Последние победы:\n"
         for i, game in enumerate(wins_all[:3], 1):  # Показываем 3 последние победы по всем играм
             response += (
                 f"{i}. {game.date.strftime('%d.%m.%Y')} - {game.city}\n"
@@ -556,7 +575,7 @@ async def show_player_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         response += "\n"
 
     if seconds_all:
-        response += "Последние 2 места:\n"
+        response += "🥈 Последние 2 места:\n"
         for i, game in enumerate(seconds_all[:3], 1):  # Показываем 3 последних вторых места по всем играм
             response += (
                 f"{i}. {game.date.strftime('%d.%m.%Y')} - {game.city}\n"
@@ -575,6 +594,8 @@ async def show_player_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def show_all_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     all_games = session.query(PokerGame).all()
+
+    img_buffer = generate_pie_chart_stats()
 
     stats = {}
     for game in all_games:
@@ -614,11 +635,20 @@ async def show_all_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "Статистика за все время:\n"
             f"🏆 Побед: {data['wins_all']} | "
             f"🥈 Вторых мест: {data['seconds_all']}\n"
-            f"💰 Общий банк, который был выигран: {data['total_bank_won_all']}\n"
-            "Актуальная статистика для игр после 27 мая 2025 года:\n"
-            f"🎯 Попаданий в топ 2: {total_top2}/{data['total_games']}\n"
-            f"📈 Винрейт (топ 2): {win_rate_top2:.2f}% | "
-            f"📈 Винрейт (победы): {win_rate_wins:.2f}%\n\n"
+            f"💰 Общий банк, который был выигран: {data['total_bank_won_all']}\n\n"
+            # "Актуальная статистика для игр после 27 мая 2025 года:\n"
+            # f"🎯 Попаданий в топ 2: {total_top2}/{data['total_games']}\n"
+            # f"📈 Винрейт (топ 2): {win_rate_top2:.2f}% | "
+            # f"📈 Винрейт (победы): {win_rate_wins:.2f}%\n\n"
+        )
+    
+    response += ("ℹ️ Для просмотра подробной статистки, перейдите в статистику конкретного игрока.\n\n")
+
+    await context.bot.send_photo(
+            chat_id=update.effective_chat.id,
+            photo=img_buffer,
+            caption="📌 Диаграмма распределения всех выигранных банков между игроками",
+            reply_markup=get_main_keyboard()
         )
 
     await update.message.reply_text(
@@ -630,7 +660,7 @@ async def show_all_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def search_game_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
-        "Введите дату игры (ДД.ММ.ГГГГ) или город для поиска:",
+        "📌 Введите дату игры (ДД.ММ.ГГГГ) или город для поиска:",
         reply_markup=ReplyKeyboardMarkup([['Отмена']], resize_keyboard=True)
     )
     return SEARCH_GAME
@@ -644,26 +674,58 @@ async def search_game(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     except ValueError:
         games = session.query(PokerGame).filter(PokerGame.city.ilike(f"%{search_term}%")).all()
     
-    if games:
-        response = f"Найдено игр: {len(games)}\n\n"
-        for game in games:
-            response += (
-                f"Дата: {game.date.strftime('%d.%m.%Y')}\n"
-                f"Город: {game.city}\n"
-                f"Игроков: {game.players_count}\n"
-                f"Победитель: {game.winner}\n"
-                f"2 место: {game.second_place}\n"
-                f"Банк: {game.bank}\n"
-                f"Количество ребаев: {game.rebuys}\n"
-                f"Описание: {game.description}\n\n"
-            )
-    else:
-        response = "Игр не найдено."
+    if not games:
+        await update.message.reply_text(
+            "ℹ️ Игр не найдено.",
+            reply_markup=get_main_keyboard()
+        )
+        return MAIN_MENU
     
-    await update.message.reply_text(
-        response,
-        reply_markup=get_main_keyboard()
-    )
+    for game in games:
+        # Получаем участников игры через связь many-to-many
+        participants = session.query(Player).\
+            join(game_players_association).\
+            join(PokerGame).\
+            filter(PokerGame.id == game.id).\
+            all()
+        
+        # Формируем информацию об игре
+        response = (
+            "🎲 *Информация об игре*\n\n"
+            f"📅 Дата: {game.date.strftime('%d.%m.%Y')}\n"
+            f"🏙 Город: {game.city}\n"
+            f"👥 Количество игроков: {game.players_count}\n"
+            f"🏆 Победитель: {game.winner}\n"
+            f"🥈 2 место: {game.second_place}\n"
+            f"💰 Банк: {game.bank:.2f}\n"
+            f"🔄 Ребаев: {game.rebuys}\n"
+            f"🎫 Бай-ин: {game.buyin:.2f}\n"
+            f"♠️ ББ: {game.big_blind}\n"
+        )
+        if game.date >= PARTICIPANTS_REQUEST_START_DATE:
+            # Добавляем список участников, если они есть
+            if participants:
+                response += "\n👤 *Участники:*\n"
+                for player in participants:
+                    # Добавляем эмодзи для победителя и второго места
+                    if player.name == game.winner:
+                        response += f"👑 {player.name}\n"
+                    elif player.name == game.second_place:
+                        response += f"🥈 {player.name}\n"
+                    else:
+                        response += f"👤 {player.name}\n"
+        
+        # Добавляем описание, если оно есть
+        if game.description:
+            response += f"\n📝 Описание: {game.description}\n"
+        
+        # Отправляем сообщение для каждой игры
+        await update.message.reply_text(
+            response,
+            reply_markup=get_main_keyboard(),
+            parse_mode='Markdown'
+        )
+    
     return MAIN_MENU
 
 def main() -> None:
