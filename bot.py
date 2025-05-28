@@ -26,10 +26,10 @@ session = get_session(engine)
 CITIES = ['Санкт-Петербург', 'Архангельск', 'Выборг']
 PLAYERS = ['Данила Бадецкий', 'Данил 72 Сергеев', 'Семен Попович', 
             'Слава Харьков', 'Дмитрий Бедарев', 'Дмитрий Ляпин', 'Максим Мерзлый',
-            'Максим Гомозов', 'Богдан Светоносов', 'Евгений Черницкий', 'Роман Р']
+            'Максим Гомозов', 'Богдан Светоносов', 'Евгений Черницкий', 'Роман Репняков',
+              'Аня Маславская']
 
 PARTICIPANTS_REQUEST_START_DATE = datetime.strptime('27.05.2025', '%d.%m.%Y').date()
-
 
 # Состояния бота
 (
@@ -65,6 +65,15 @@ def get_cities_keyboard():
 
 def get_players_keyboard():
     return ReplyKeyboardMarkup([[player] for player in PLAYERS] + [['Отмена']], resize_keyboard=True)
+
+async def check_cancel(update: Update, text: str) -> bool:
+    if text == 'Отмена':
+        await update.message.reply_text(
+            "Действие отменено. Возвращаемся в главное меню.",
+            reply_markup=get_main_keyboard()
+        )
+        return True
+    return False
 
 async def delete_game_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
@@ -201,7 +210,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await context.bot.send_photo(
             chat_id=update.effective_chat.id,
             photo=InputFile(photo),
-            caption="Привет, мои техаско-канзаские друзья! Я создал этого бота на замену гугл таблице, надеюсь вам хоть чуть-чуть будет в прикол добавлять записи, но а если нет, то похуй, это был мой первый опыт создания бота! Пишите насчет предложений и багов! Позже допилю. Это начало чего-то большего!!\nВыберите действие:",
+            caption="Приветствую! Добро пожаловать в бот учета наших покерных игр. Тут будет статистика",
             reply_markup=get_main_keyboard()
         )
     return MAIN_MENU
@@ -223,6 +232,9 @@ async def add_game_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ADD_DATE
 
 async def add_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if await check_cancel(update, update.message.text):
+        return MAIN_MENU
+
     try:
         date_obj = datetime.strptime(update.message.text, '%d.%m.%Y').date()
         context.user_data['game_date'] = date_obj
@@ -236,6 +248,9 @@ async def add_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ADD_DATE
 
 async def add_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if await check_cancel(update, update.message.text):
+        return MAIN_MENU
+    
     if update.message.text not in CITIES:
         await update.message.reply_text("Пожалуйста, выберите город из списка:")
         return ADD_CITY
@@ -248,6 +263,9 @@ async def add_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ADD_PLAYERS_COUNT
 
 async def add_players_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if await check_cancel(update, update.message.text):
+        return MAIN_MENU
+    
     try:
         players_count = int(update.message.text)
         if players_count < 2:
@@ -265,6 +283,9 @@ async def add_players_count(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return ADD_PLAYERS_COUNT
 
 async def add_winner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if await check_cancel(update, update.message.text):
+        return MAIN_MENU
+    
     if update.message.text not in PLAYERS:
         await update.message.reply_text("Пожалуйста, выберите игрока из списка:")
         return ADD_WINNER
@@ -277,6 +298,9 @@ async def add_winner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ADD_SECOND_PLACE
 
 async def add_second_place(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if await check_cancel(update, update.message.text):
+        return MAIN_MENU
+    
     if update.message.text not in PLAYERS:
         await update.message.reply_text("Пожалуйста, выберите игрока из списка:")
         return ADD_SECOND_PLACE
@@ -303,6 +327,9 @@ async def add_second_place(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def add_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if await check_cancel(update, update.message.text):
+        return MAIN_MENU
+    
     context.user_data['selected_players'] = []
 
     # Исключаем победителя и игрока, занявшего второе место, из списка доступных участников
