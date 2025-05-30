@@ -49,15 +49,23 @@ PARTICIPANTS_REQUEST_START_DATE = datetime.strptime('27.05.2025', '%d.%m.%Y').da
     DELETE_GAME_SELECT,
     PLAYER_STATS,
     ADD_PLAYERS,
-    CONFIRM_PLAYERS
-) = range(17)
+    CONFIRM_PLAYERS,
+    SEASONS_MENU,
+    SEASON_POINTS,
+) = range(19)
 
 # Создаем клавиатуры
 def get_main_keyboard():
     return ReplyKeyboardMarkup([
         ['Добавить игру', 'Последние игры'],
         ['Статистика игроков', 'Найти игру'],
-        ['Удалить игру']
+        ['Удалить игру', 'Сезоны']
+    ], resize_keyboard=True)
+
+def get_seasons_keyboard():
+    return ReplyKeyboardMarkup([
+        ['Очки сезона'],
+        ['Вернуться в главное меню']
     ], resize_keyboard=True)
 
 def get_cities_keyboard():
@@ -519,6 +527,73 @@ async def player_stats_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     return PLAYER_STATS
 
+async def seasons_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "🍀 Первый сезон: Лакерный\n\n"
+        "🏆 Победитель: Слава Харьков ()\n"
+        "🥈 Преследователь: Данила Бадецкий ()\n"
+        "📅 Сезон длился с начала гугл-таблицы до 31.05.2025",
+        reply_markup=get_seasons_keyboard()
+    )
+    return SEASONS_MENU
+
+async def show_season_points(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    SEASON_START_DATE = datetime.strptime('01.06.2025', '%d.%m.%Y').date()
+    SEASON_END_DATE = datetime.strptime('30.11.2025', '%d.%m.%Y').date()
+    
+    # Получаем всех игроков
+    players = session.query(Player).all()
+    player_stats = []
+    
+    for player in players:
+        # Получаем игры сезона с участием игрока
+        season_games = session.query(PokerGame)\
+            .join(PokerGame.players)\
+            .filter(
+                Player.id == player.id,
+                PokerGame.date >= SEASON_START_DATE,
+                PokerGame.date <= SEASON_END_DATE
+            ).all()
+        
+        if not season_games:
+            continue
+            
+        # Считаем статистику
+        wins = len([g for g in season_games if g.winner == player.name])
+        seconds = len([g for g in season_games if g.second_place == player.name])
+        total_games = len(season_games)
+        
+        win_rate = (wins / total_games * 100) if total_games > 0 else 0
+        second_rate = (seconds / total_games * 100) if total_games > 0 else 0
+        
+        # Рассчитываем очки по формуле
+        points = win_rate + 0.33 * second_rate
+        player_stats.append((player.name, points, wins, seconds, total_games))
+    
+    # Сортируем по убыванию очков
+    player_stats.sort(key=lambda x: x[1], reverse=True)
+    
+    # Формируем ответ (без Markdown разметки)
+    response = "🏆 Топ игроков текущего сезона:\n\n"
+    response += "Рейтинг рассчитывается по формуле:\n"
+    response += "🃏 Очки = (Винрейт за 1 места) + 0.33 * (Винрейт за 2 места)\n"
+    response += "📊 Статистика выводится в виде: (Очки / Победы в сезоне / Вторые места в сезоне / Количество игр)\n\n"
+    
+    for i, (name, points, wins, seconds, total) in enumerate(player_stats, 1):
+        win_rate = (wins / total * 100) if total > 0 else 0
+        second_rate = (seconds / total * 100) if total > 0 else 0
+        response += f"🔻 {name}: {points:.1f} / {wins} / {seconds} / {total}\n\n"
+    
+    if not player_stats:
+        response = "В текущем сезоне еще не было игр."
+    
+    await update.message.reply_text(
+        response,
+        reply_markup=get_seasons_keyboard(),
+        parse_mode=None  
+    )
+    return SEASONS_MENU
+
 async def show_player_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     player_name = update.message.text
 
@@ -528,62 +603,68 @@ async def show_player_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if player_name.lower() == 'все':
         return await show_all_stats(update, context)
 
-    # Получаем все игры, в которых участвовал игрок, отсортированные по дате в порядке убывания
+    # Определяем даты начала и конца сезона
+    SEASON_START_DATE = datetime.strptime('01.06.2025', '%d.%m.%Y').date()
+    SEASON_END_DATE = datetime.strptime('30.11.2025', '%d.%m.%Y').date()
+
+    # Получаем все игры игрока
     games_participated = session.query(PokerGame).join(PokerGame.players).filter(
         Player.name == player_name
     ).order_by(PokerGame.date.desc()).all()
 
-    # Получаем победы и вторые места по всем играм
+    # Статистика за все время
     wins_all = [game for game in games_participated if game.winner == player_name]
     seconds_all = [game for game in games_participated if game.second_place == player_name]
-
-    # Получаем победы и вторые места только после определенной даты
-    wins = [game for game in games_participated if game.winner == player_name and game.date >= PARTICIPANTS_REQUEST_START_DATE]
-    seconds = [game for game in games_participated if game.second_place == player_name and game.date >= PARTICIPANTS_REQUEST_START_DATE]
-
-    total_games_participated = len([game for game in games_participated if game.date >= PARTICIPANTS_REQUEST_START_DATE])
-    total_wins = len(wins)
-    total_seconds = len(seconds)
-    total_top2 = total_wins + total_seconds
-
-    # Рассчитываем общий банк, который был выигран игроком по всем играм
     total_bank_won_all = sum(game.bank for game in wins_all)
 
-    # Рассчитываем проценты
-    win_rate_top2 = (total_top2 / total_games_participated * 100) if total_games_participated > 0 else 0
-    win_rate_wins = (total_wins / total_games_participated * 100) if total_games_participated > 0 else 0
+    # Статистика за сезон
+    season_games = [game for game in games_participated if SEASON_START_DATE <= game.date <= SEASON_END_DATE]
+    season_wins = [game for game in season_games if game.winner == player_name]
+    season_seconds = [game for game in season_games if game.second_place == player_name]
+    season_top2 = len(season_wins) + len(season_seconds)
+    season_bank = sum(game.bank for game in season_wins)
 
+    # Рассчитываем проценты для сезона
+    season_win_rate_top2 = (season_top2 / len(season_games) * 100) if season_games else 0
+    season_win_rate = (len(season_wins) / len(season_games) * 100) if season_games else 0
+
+    # Формируем ответ
     response = (
-        f"📊 Статистика игрока {player_name}:\n"
+        f"📊 Статистика игрока {player_name}:\n\n"
         "ℹ️ Статистика за все время:\n"
         f"🏆 Побед: {len(wins_all)}\n"
         f"🥈 Вторых мест: {len(seconds_all)}\n"
-        f"💰 Общий банк, который был выигран: {total_bank_won_all}\n"
-        "ℹ️ Актуальная статистика для игр после 27 мая 2025 года:\n"
-        f"🎯 Попаданий в топ 2: {total_top2}/{total_games_participated}\n"
-        f"📈 Винрейт (топ 2): {win_rate_top2:.2f}%\n"
-        f"📈 Винрейт (победы): {win_rate_wins:.2f}%\n\n"
+        f"💰 Общий банк, который был выигран: {total_bank_won_all}\n\n"
+        f"ℹ️ Статистика сезона ({SEASON_START_DATE.strftime('%d.%m.%Y')}-{SEASON_END_DATE.strftime('%d.%m.%Y')}):\n"
+        f"🏆 Побед в сезоне: {len(season_wins)}\n"
+        f"🥈 Вторых мест в сезоне: {len(season_seconds)}\n"
+        f" Всего игр в сезоне: {len(season_games)}\n"
+        f"🎯 Попаданий в топ 2: {season_top2}/{len(season_games)}\n"
+        f"📈 Винрейт (топ 2): {season_win_rate_top2:.2f}%\n"
+        f"📈 Винрейт (победы): {season_win_rate:.2f}%\n"
+        f"💰 Банк в сезоне: {season_bank}\n\n"
     )
 
+    # Добавляем последние победы
     if wins_all:
         response += "🏆 Последние победы:\n"
-        for i, game in enumerate(wins_all[:3], 1):  # Показываем 3 последние победы по всем играм
+        for i, game in enumerate(wins_all[:3], 1):
             response += (
-                f"{i}. {game.date.strftime('%d.%m.%Y')} - {game.city}\n"
-                f"   Банк: {game.bank}\n"
+                f"{i}. {game.date.strftime('%d.%m.%Y')} - {game.city} (Банк: {game.bank})\n"
             )
         response += "\n"
 
+    # Добавляем последние победы в сезоне
     if seconds_all:
-        response += "🥈 Последние 2 места:\n"
-        for i, game in enumerate(seconds_all[:3], 1):  # Показываем 3 последних вторых места по всем играм
+        response += "🥈 Последние вторые места:\n"
+        for i, game in enumerate(seconds_all[:3], 1):
             response += (
                 f"{i}. {game.date.strftime('%d.%m.%Y')} - {game.city}\n"
                 f"   Победитель: {game.winner}\n"
             )
 
     if not games_participated:
-        response += "Игр с участием этого игрока не найдено."
+        response = f"Игрока {player_name} не найдено в базе данных."
 
     await update.message.reply_text(
         response,
@@ -740,6 +821,7 @@ def main() -> None:
                 MessageHandler(filters.Regex('^Статистика игроков$'), player_stats_start),
                 MessageHandler(filters.Regex('^Найти игру$'), search_game_start),
                 MessageHandler(filters.Regex('^Удалить игру$'), delete_game_start),
+                MessageHandler(filters.Regex('^Сезоны$'), seasons_menu),
             ],
             ADD_DATE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_date),
@@ -800,6 +882,10 @@ def main() -> None:
             DELETE_GAME_SELECT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, delete_game_select),
                 MessageHandler(filters.Regex('^Отмена$'), cancel),
+            ],
+            SEASONS_MENU: [
+                MessageHandler(filters.Regex('^Очки сезона$'), show_season_points),
+                MessageHandler(filters.Regex('^Вернуться в главное меню$'), cancel),
             ],
         },
         fallbacks=[
