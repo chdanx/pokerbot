@@ -1,0 +1,12 @@
+services:
+  pokerbot:
+    build: .
+    container_name: pokerbot
+    restart: unless-stopped
+    user: "${BOT_UID:-1000}:${BOT_GID:-1000}"
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN in .env}
+      DATABASE_URL: sqlite:////app/data/poker_games.db
+      WELCOME_IMAGE_PATH: /app/hi_pic.jpg
+    volumes:
+      - ./data:/app/data

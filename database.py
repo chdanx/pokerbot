@@ -1,3 +1,5 @@
+import os
+
 from sqlalchemy import create_engine, Column, Integer, String, Date, Float, ForeignKey, Table, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -40,7 +42,8 @@ class PokerGame(Base):
     players = relationship("Player", secondary=game_players_association, backref="poker_games")
 
 def init_db():
-    engine = create_engine('sqlite:///poker_games.db')
+    database_url = os.getenv('DATABASE_URL', 'sqlite:///data/poker_games.db')
+    engine = create_engine(database_url)
     Base.metadata.create_all(engine)
     return engine
 
