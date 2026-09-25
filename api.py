@@ -192,7 +192,11 @@ def save_game(payload: GamePayload, session: Session, game: PokerGame | None = N
     if payload.winner not in payload.participants or payload.second_place not in payload.participants:
         raise HTTPException(422, "Winner and second place must be among participants")
     city_name = payload.city.strip()
-    city = session.query(City).filter(func.lower(City.name) == city_name.lower()).one_or_none()
+    # SQLite's lower() only handles ASCII reliably, so it cannot be used for
+    # Russian city names. Check the exact name first, then compare in Python.
+    city = session.query(City).filter(City.name == city_name).one_or_none()
+    if not city:
+        city = next((item for item in session.query(City).all() if item.name.casefold() == city_name.casefold()), None)
     if not city:
         city = City(name=city_name)
         session.add(city)
@@ -293,7 +297,9 @@ def delete_game(game_id: int, _: dict = Depends(telegram_user), session: Session
 
 @app.post("/api/players", status_code=201)
 def create_player(payload: PlayerPayload, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
-    existing = session.query(Player).filter(func.lower(Player.name) == payload.name.lower()).one_or_none()
+    existing = session.query(Player).filter(Player.name == payload.name).one_or_none()
+    if not existing:
+        existing = next((item for item in session.query(Player).all() if item.name.casefold() == payload.name.casefold()), None)
     if existing:
         raise HTTPException(409, "Игрок с таким именем уже есть")
     player = Player(name=payload.name)
