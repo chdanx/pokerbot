@@ -238,10 +238,10 @@ async def delete_game_select(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return MAIN_MENU
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    app_button = (
-        InlineKeyboardMarkup([[InlineKeyboardButton('♠️ Открыть Poker Stats', web_app=WebAppInfo(url=WEB_APP_URL))]])
-        if WEB_APP_URL else None
-    )
+    if not WEB_APP_URL:
+        raise RuntimeError('WEB_APP_URL environment variable is required')
+    await update.message.reply_text("Откройте Poker Stats в Mini App.", reply_markup=ReplyKeyboardRemove())
+    app_button = InlineKeyboardMarkup([[InlineKeyboardButton('♠️ Открыть Poker Stats', web_app=WebAppInfo(url=WEB_APP_URL))]])
     with WELCOME_IMAGE_PATH.open('rb') as photo:
         await context.bot.send_photo(
             chat_id=update.effective_chat.id,
@@ -249,11 +249,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             caption=(
                 "♠️ Poker Stats\n\n"
                 "Здесь живёт история ваших игр: результаты, банки, сезоны и личная статистика.\n"
-                "Выберите действие в меню ниже."
+                "Все действия доступны только в Mini App."
             ),
-            reply_markup=app_button or get_main_keyboard()
+            reply_markup=app_button
         )
-    return MAIN_MENU
+    return ConversationHandler.END
 
 
 async def configure_menu_button(application: Application) -> None:
@@ -886,90 +886,8 @@ def main() -> None:
 
     application = Application.builder().token(token).post_init(configure_menu_button).build()
     
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            MAIN_MENU: [
-                MessageHandler(filters.Regex(f'^({BTN_ADD_GAME}|Добавить игру)$'), add_game_start),
-                MessageHandler(filters.Regex(f'^({BTN_RECENT_GAMES}|Последние игры)$'), show_recent_games),
-                MessageHandler(filters.Regex(f'^({BTN_PLAYER_STATS}|Статистика игроков|Статистика)$'), player_stats_start),
-                MessageHandler(filters.Regex(f'^({BTN_SEARCH_GAME}|Найти игру)$'), search_game_start),
-                MessageHandler(filters.Regex(f'^({BTN_DELETE_GAME}|Удалить игру)$'), delete_game_start),
-                MessageHandler(filters.Regex(f'^({BTN_SEASONS}|Сезоны)$'), seasons_menu),
-            ],
-            ADD_DATE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_date),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            ADD_CITY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_city),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            ADD_PLAYERS_COUNT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_players_count),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            ADD_WINNER: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_winner),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            ADD_SECOND_PLACE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_second_place),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            ADD_PLAYERS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_players),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            CONFIRM_PLAYERS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_players),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            ADD_REBUYS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_rebuys),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            ADD_BUYIN: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_buyin),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            ADD_BIG_BLIND: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_big_blind),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            ADD_DESCRIPTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_description),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            SEARCH_GAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, search_game),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            PLAYER_STATS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, show_player_stats),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            DELETE_GAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, delete_game_execute),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            DELETE_GAME_SELECT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, delete_game_select),
-                MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-            ],
-            SEASONS_MENU: [
-                MessageHandler(filters.Regex(f'^({BTN_SEASON_POINTS}|Очки сезона)$'), show_season_points),
-                MessageHandler(filters.Regex(f'^({BTN_MAIN_MENU}|Вернуться в главное меню)$'), cancel),
-            ],
-        },
-        fallbacks=[
-            CommandHandler('cancel', cancel),
-            CommandHandler('start', start),
-            MessageHandler(filters.Regex(f'^({BTN_CANCEL}|Отмена)$'), cancel),
-        ],
-    )
-    
-    application.add_handler(conv_handler)
+    # The bot only launches the Mini App; game workflows are intentionally not handled in chat.
+    application.add_handler(CommandHandler('start', start))
     application.run_polling()
 
 if __name__ == '__main__':

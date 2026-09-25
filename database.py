@@ -23,6 +23,13 @@ class Player(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String, unique=True)
 
+
+class City(Base):
+    __tablename__ = 'cities'
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, unique=True, nullable=False)
+
 class PokerGame(Base):
     __tablename__ = 'poker_games'
 
