@@ -5,7 +5,45 @@
 
 Используется Python 3.11.1, sqlite для манипулирования с базой данных.
 
-## Запуск в Docker
+## Telegram Mini App
+
+Бот открывает приложение с главной панелью, историей игр, статистикой игроков и рейтингом сезона.
+Добавление, редактирование и удаление игр выполняются прямо в Mini App. Данные продолжают храниться в
+`data/poker_games.db`.
+
+### Что нужно для публичного запуска
+
+Telegram принимает Mini App только по HTTPS. Нужен домен или поддомен, например `poker.example.com`,
+для которого можно создать DNS-запись. IP-адрес сервера сам по себе не подходит.
+
+1. Купите домен у любого регистратора либо используйте уже имеющийся.
+2. В панели DNS создайте запись типа `A`:
+
+   ```text
+   poker.example.com -> 78.17.57.130
+   ```
+
+   Если используется корневой домен, вместо `poker` укажите `@`. Не создавайте прокси/CDN на время
+   первого запуска: сервер должен быть доступен снаружи на портах 80 и 443.
+3. В панели хостинга/VPS разрешите входящие TCP-порты 80 и 443. При UFW:
+
+   ```bash
+   sudo ufw allow 80/tcp
+   sudo ufw allow 443/tcp
+   ```
+
+4. Дождитесь, пока команда с сервера вернёт его внешний IP:
+
+   ```bash
+   getent hosts poker.example.com
+   ```
+
+   Подставьте свой домен вместо примера. DNS обычно обновляется за несколько минут, но иногда занимает
+   до суток.
+
+HTTPS выпускает и продлевает Caddy в Docker автоматически. Вручную выпускать сертификат не нужно.
+
+### Запуск в Docker
 
 1. Скопируйте пример переменных окружения:
 
@@ -13,16 +51,45 @@
 cp .env.example .env
 ```
 
-2. Укажите токен Telegram-бота в `.env`:
+2. Заполните `.env`: токен бота и реальное доменное имя.
 
 ```bash
 TELEGRAM_BOT_TOKEN=123456789:your_real_token
+APP_DOMAIN=poker.example.com
 ```
 
-3. Запустите бота:
+3. Убедитесь, что новая база находится в `data/poker_games.db`, и запустите сервисы:
 
 ```bash
 docker compose up -d --build
+```
+
+   Если установлена старая версия Compose, используйте `docker-compose` вместо `docker compose`.
+
+4. Откройте `https://poker.example.com/api/health` в браузере. Ответ `{"status":"ok"}` означает,
+   что домен, HTTPS и API работают.
+
+5. Подключите адрес в Telegram. Откройте [@BotFather](https://t.me/BotFather) → `/mybots` → ваш бот
+   → **Bot Settings** → **Menu Button** → **Configure menu button**, укажите текст `Poker Stats` и URL
+   `https://poker.example.com`. Затем в **Configure Mini App** включите Main Mini App и укажите тот же URL.
+   Перезапустите бота, если он уже работал: `docker compose restart pokerbot`.
+
+После этого нажмите `/start` у бота: появится кнопка «Открыть Poker Stats». Также приложение будет
+доступно по кнопке меню и как **Launch app** в профиле бота.
+
+### Обновление на сервере
+
+```bash
+cd ~/pokerbot/pokerbot
+git pull
+docker compose up -d --build
+docker compose logs -f --tail=100
+```
+
+Сделайте резервную копию базы перед крупным обновлением:
+
+```bash
+cp data/poker_games.db "data/poker_games.db.$(date +%F).backup"
 ```
 
 SQLite-база хранится в `./data/poker_games.db` и подключается в контейнер как volume. Для просмотра логов:
@@ -40,6 +107,12 @@ docker compose down
 ## Переменные окружения
 
 - `TELEGRAM_BOT_TOKEN` - обязательный токен Telegram-бота.
-- `DATABASE_URL` - строка подключения SQLAlchemy. По умолчанию в Docker используется `sqlite:////app/data/poker_games.db`.
-- `WELCOME_IMAGE_PATH` - путь к приветственной картинке. По умолчанию `/app/hi_pic.jpg` в Docker.
+- `APP_DOMAIN` — публичный домен Mini App без `https://`.
+- `SEASON_START` и `SEASON_END` — границы текущего сезона в формате `ГГГГ-ММ-ДД`.
 - `BOT_UID` и `BOT_GID` - UID/GID пользователя, от которого запускается контейнер. По умолчанию `1000:1000`, чтобы SQLite мог писать в bind mount `./data`.
+
+### Безопасность
+
+Каждый запрос Mini App к API содержит Telegram `initData`. Сервер проверяет его HMAC-подпись по токену
+бота и отклоняет сессии старше 24 часов. Не публикуйте `.env` и не передавайте `TELEGRAM_BOT_TOKEN`
+во фронтенд: он остаётся только в контейнерах `pokerbot` и `api`.

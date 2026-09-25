@@ -12,7 +12,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py database.py hi_pic.jpg ./
+COPY bot.py api.py database.py hi_pic.jpg ./
 
 RUN mkdir -p /app/data && chown -R bot:bot /app
 

@@ -8,5 +8,46 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN in .env}
       DATABASE_URL: sqlite:////app/data/poker_games.db
       WELCOME_IMAGE_PATH: /app/hi_pic.jpg
+      WEB_APP_URL: https://${APP_DOMAIN:?Set APP_DOMAIN in .env}
     volumes:
       - ./data:/app/data
+
+  api:
+    build: .
+    container_name: pokerbot-api
+    restart: unless-stopped
+    user: "${BOT_UID:-1000}:${BOT_GID:-1000}"
+    command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN in .env}
+      DATABASE_URL: sqlite:////app/data/poker_games.db
+      SEASON_START: ${SEASON_START:-2025-06-01}
+      SEASON_END: ${SEASON_END:-2025-12-31}
+    volumes:
+      - ./data:/app/data
+
+  web:
+    build: ./frontend
+    container_name: pokerbot-web
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.10-alpine
+    container_name: pokerbot-proxy
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - web
+
+volumes:
+  caddy_data:
+  caddy_config:

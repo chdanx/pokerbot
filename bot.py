@@ -1,4 +1,7 @@
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InputFile
+from telegram import (
+    Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InputFile,
+    InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonWebApp, WebAppInfo
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -16,6 +19,7 @@ from collections import defaultdict
 
 BASE_DIR = Path(__file__).resolve().parent
 WELCOME_IMAGE_PATH = Path(os.getenv('WELCOME_IMAGE_PATH', BASE_DIR / 'hi_pic.jpg'))
+WEB_APP_URL = os.getenv('WEB_APP_URL', '').strip()
 
 # Настройка логирования
 logging.basicConfig(
@@ -234,6 +238,10 @@ async def delete_game_select(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return MAIN_MENU
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    app_button = (
+        InlineKeyboardMarkup([[InlineKeyboardButton('♠️ Открыть Poker Stats', web_app=WebAppInfo(url=WEB_APP_URL))]])
+        if WEB_APP_URL else None
+    )
     with WELCOME_IMAGE_PATH.open('rb') as photo:
         await context.bot.send_photo(
             chat_id=update.effective_chat.id,
@@ -243,9 +251,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 "Здесь живёт история ваших игр: результаты, банки, сезоны и личная статистика.\n"
                 "Выберите действие в меню ниже."
             ),
-            reply_markup=get_main_keyboard()
+            reply_markup=app_button or get_main_keyboard()
         )
     return MAIN_MENU
+
+
+async def configure_menu_button(application: Application) -> None:
+    """Expose the Mini App through Telegram's persistent menu button."""
+    if WEB_APP_URL:
+        await application.bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(text='Poker Stats', web_app=WebAppInfo(url=WEB_APP_URL))
+        )
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
@@ -580,6 +596,11 @@ async def seasons_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         "📅 До 31.05.2025\n"
         "🏆 Победитель: Слава Харьков\n"
         "🥈 Преследователь: Данила Бадецкий\n\n"
+        "Второй сезон: \n"
+        "📅 С 01.06.2025 До 31.12.2025\n"
+        "Победитель: \n"
+        "Преследователь: \n\n"
+        "Третий сезон \n"
         "Откройте очки текущего сезона кнопкой ниже.",
         reply_markup=get_seasons_keyboard()
     )
@@ -863,7 +884,7 @@ def main() -> None:
     if not token:
         raise RuntimeError('TELEGRAM_BOT_TOKEN environment variable is required')
 
-    application = Application.builder().token(token).build()
+    application = Application.builder().token(token).post_init(configure_menu_button).build()
     
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
