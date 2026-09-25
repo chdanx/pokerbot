@@ -4,7 +4,7 @@ import hmac
 import json
 import os
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from urllib.parse import parse_qsl
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
@@ -62,6 +62,7 @@ class GamePayload(BaseModel):
     rebuys: int = Field(ge=0, le=100)
     buyin: float = Field(gt=0)
     big_blind: int = Field(gt=0)
+    was_hookah: bool = False
     description: str | None = Field(default=None, max_length=2000)
 
     @field_validator("city")
@@ -81,12 +82,25 @@ class GamePayload(BaseModel):
         return cleaned
 
 
+class PlayerPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, name: str) -> str:
+        name = name.strip()
+        if not name:
+            raise ValueError("Player name must not be empty")
+        return name
+
+
 def game_dict(game: PokerGame, detailed: bool = False) -> dict:
     result = {
         "id": game.id, "date": game.date.isoformat(), "city": game.city,
         "players_count": game.players_count, "winner": game.winner,
         "second_place": game.second_place, "bank": round(game.bank, 2),
         "rebuys": game.rebuys, "buyin": game.buyin, "big_blind": game.big_blind,
+        "was_hookah": game.was_hookah,
         "description": game.description,
     }
     if detailed:
@@ -98,7 +112,7 @@ def game_averages(games: list[PokerGame]) -> dict:
     """Metrics that remain meaningful even when the game list is empty."""
     count = len(games)
     if not count:
-        return {"games": 0, "bank": 0, "avg_bank": 0, "avg_players": 0, "avg_rebuys": 0, "avg_buyin": 0}
+        return {"games": 0, "bank": 0, "avg_bank": 0, "avg_players": 0, "avg_rebuys": 0, "avg_buyin": 0, "hookah_rate": 0}
     return {
         "games": count,
         "bank": round(sum(game.bank for game in games), 2),
@@ -106,6 +120,7 @@ def game_averages(games: list[PokerGame]) -> dict:
         "avg_players": round(sum(game.players_count for game in games) / count, 1),
         "avg_rebuys": round(sum(game.rebuys for game in games) / count, 1),
         "avg_buyin": round(sum(game.buyin for game in games) / count, 2),
+        "hookah_rate": round(sum(bool(game.was_hookah) for game in games) / count * 100, 1),
     }
 
 
@@ -136,6 +151,39 @@ def player_summary(name: str, games: list[PokerGame]) -> dict:
     }
 
 
+def season_start_for(day: date) -> date:
+    """Poker seasons are Jan 1–May 31 and Jun 1–Dec 31."""
+    return date(day.year, 1, 1) if day.month <= 5 else date(day.year, 6, 1)
+
+
+def season_end_for(start: date) -> date:
+    return date(start.year, 5, 31) if start.month == 1 else date(start.year, 12, 31)
+
+
+def previous_season_start(start: date) -> date:
+    return date(start.year - 1, 6, 1) if start.month == 1 else date(start.year, 1, 1)
+
+
+def season_label(start: date) -> str:
+    return f"{start.strftime('%d.%m.%Y')} — {season_end_for(start).strftime('%d.%m.%Y')}"
+
+
+def season_data(session: Session, start: date) -> dict:
+    end = season_end_for(start)
+    games = session.query(PokerGame).filter(PokerGame.date.between(start, end)).all()
+    names = sorted({player.name for game in games for player in game.players})
+    board = []
+    for name in names:
+        played = [game for game in games if any(player.name == name for player in game.players)]
+        wins = sum(game.winner == name for game in played)
+        seconds = sum(game.second_place == name for game in played)
+        points = (wins / len(played) * 100) + .33 * (seconds / len(played) * 100) if played else 0
+        board.append({"name": name, "games": len(played), "wins": wins, "seconds": seconds, "points": round(points, 1)})
+    leaderboard = sorted(board, key=lambda item: (-item["points"], -item["wins"], item["name"]))
+    return {"start": start.isoformat(), "end": end.isoformat(), "label": season_label(start),
+            "summary": game_averages(games), "leaderboard": leaderboard}
+
+
 def save_game(payload: GamePayload, session: Session, game: PokerGame | None = None) -> PokerGame:
     if payload.winner == payload.second_place:
         raise HTTPException(422, "Winner and second place must be different")
@@ -152,6 +200,7 @@ def save_game(payload: GamePayload, session: Session, game: PokerGame | None = N
     game.date, game.city, game.players_count = payload.date, city.name, payload.players_count
     game.winner, game.second_place = payload.winner, payload.second_place
     game.rebuys, game.buyin, game.big_blind = payload.rebuys, payload.buyin, payload.big_blind
+    game.was_hookah = payload.was_hookah
     game.bank = round((payload.players_count + payload.rebuys) * payload.buyin, 2)
     game.description = payload.description or None
     game.players.clear()
@@ -242,6 +291,17 @@ def delete_game(game_id: int, _: dict = Depends(telegram_user), session: Session
     session.commit()
 
 
+@app.post("/api/players", status_code=201)
+def create_player(payload: PlayerPayload, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
+    existing = session.query(Player).filter(func.lower(Player.name) == payload.name.lower()).one_or_none()
+    if existing:
+        raise HTTPException(409, "Игрок с таким именем уже есть")
+    player = Player(name=payload.name)
+    session.add(player)
+    session.commit()
+    return {"name": player.name}
+
+
 @app.get("/api/players/{name}")
 def player_stats(name: str, date_from: date | None = None, date_to: date | None = None, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
     if not session.query(Player).filter(Player.name == name).one_or_none():
@@ -253,10 +313,10 @@ def player_stats(name: str, date_from: date | None = None, date_to: date | None 
     if date_to:
         query = query.filter(PokerGame.date <= date_to)
     games = query.order_by(PokerGame.date.desc(), PokerGame.id.desc()).all()
-    season_start = date.fromisoformat(os.getenv("SEASON_START", "2025-06-01"))
-    season_end = date.fromisoformat(os.getenv("SEASON_END", "2025-12-31"))
-    duration = season_end - season_start
-    previous_start, previous_end = season_start - duration - timedelta(days=1), season_start - timedelta(days=1)
+    season_start = season_start_for(date.today())
+    season_end = season_end_for(season_start)
+    previous_start = previous_season_start(season_start)
+    previous_end = season_end_for(previous_start)
     season_games = [game for game in all_games if season_start <= game.date <= season_end]
     previous_games = [game for game in all_games if previous_start <= game.date <= previous_end]
     return {"name": name, **player_summary(name, games), "recent_games": [game_dict(game) for game in games[:8]],
@@ -297,18 +357,25 @@ def stats_overview(date_from: date | None = None, date_to: date | None = None, _
             "largest_wins": [{"name": name, "game": game_dict(game)} for name, game in sorted(largest_wins.items(), key=lambda item: (-item[1].bank, item[0]))]}}
 
 
+@app.get("/api/seasons")
+def seasons(_: dict = Depends(telegram_user), session: Session = Depends(db_session)):
+    """Short, tappable summaries of the current and completed poker seasons."""
+    current_start = season_start_for(date.today())
+    starts = {current_start}
+    for game_date, in session.query(PokerGame.date).all():
+        starts.add(season_start_for(game_date))
+    summaries = []
+    for start in sorted(starts, reverse=True):
+        data = season_data(session, start)
+        podium = data["leaderboard"][:2]
+        summaries.append({"start": data["start"], "end": data["end"], "label": data["label"], "summary": data["summary"],
+                          "winner": podium[0] if podium else None, "second_place": podium[1] if len(podium) > 1 else None})
+    return summaries
+
+
 @app.get("/api/season")
-def season(_: dict = Depends(telegram_user), session: Session = Depends(db_session)):
-    start = date.fromisoformat(os.getenv("SEASON_START", "2025-06-01"))
-    end = date.fromisoformat(os.getenv("SEASON_END", "2025-12-31"))
-    games = session.query(PokerGame).filter(PokerGame.date.between(start, end)).all()
-    names = sorted({player.name for game in games for player in game.players})
-    board = []
-    for name in names:
-        played = [game for game in games if any(player.name == name for player in game.players)]
-        wins = sum(game.winner == name for game in played)
-        seconds = sum(game.second_place == name for game in played)
-        points = (wins / len(played) * 100) + .33 * (seconds / len(played) * 100) if played else 0
-        board.append({"name": name, "games": len(played), "wins": wins, "seconds": seconds, "points": round(points, 1)})
-    return {"start": start.isoformat(), "end": end.isoformat(), "summary": game_averages(games),
-            "leaderboard": sorted(board, key=lambda item: item["points"], reverse=True)}
+def season(start: date | None = None, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
+    start = start or season_start_for(date.today())
+    if start != season_start_for(start):
+        raise HTTPException(422, "Season must start on 1 January or 1 June")
+    return season_data(session, start)

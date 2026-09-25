@@ -1,6 +1,6 @@
 import os
 
-from sqlalchemy import create_engine, Column, Integer, String, Date, Float, ForeignKey, Table, func
+from sqlalchemy import create_engine, Column, Integer, String, Date, Float, Boolean, ForeignKey, Table, func, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import date
@@ -43,6 +43,7 @@ class PokerGame(Base):
     bank = Column(Float)
     buyin = Column(Float)
     big_blind = Column(Integer)
+    was_hookah = Column(Boolean, nullable=False, default=False)
     description = Column(String, nullable=True)
 
     # Связь с участниками
@@ -52,6 +53,13 @@ def init_db():
     database_url = os.getenv('DATABASE_URL', 'sqlite:///data/poker_games.db')
     engine = create_engine(database_url)
     Base.metadata.create_all(engine)
+    # SQLite's create_all does not add a new column to an existing production table.
+    # Keep this small migration here so the deployed database gains the hookah flag safely.
+    if engine.dialect.name == 'sqlite':
+        columns = {column['name'] for column in inspect(engine).get_columns('poker_games')}
+        if 'was_hookah' not in columns:
+            with engine.begin() as connection:
+                connection.execute(text('ALTER TABLE poker_games ADD COLUMN was_hookah BOOLEAN NOT NULL DEFAULT 0'))
     return engine
 
 def get_session(engine):

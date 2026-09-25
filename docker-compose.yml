@@ -21,8 +21,6 @@ services:
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN in .env}
       DATABASE_URL: sqlite:////app/data/poker_games.db
-      SEASON_START: ${SEASON_START:-2025-06-01}
-      SEASON_END: ${SEASON_END:-2025-12-31}
     volumes:
       - ./data:/app/data
 
