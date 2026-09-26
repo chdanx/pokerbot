@@ -112,14 +112,13 @@ def game_averages(games: list[PokerGame]) -> dict:
     """Metrics that remain meaningful even when the game list is empty."""
     count = len(games)
     if not count:
-        return {"games": 0, "bank": 0, "avg_bank": 0, "avg_players": 0, "avg_rebuys": 0, "avg_buyin": 0, "hookah_rate": 0}
+        return {"games": 0, "bank": 0, "avg_bank": 0, "avg_players": 0, "avg_rebuys": 0, "hookah_rate": 0}
     return {
         "games": count,
         "bank": round(sum(game.bank for game in games), 2),
         "avg_bank": round(sum(game.bank for game in games) / count, 2),
         "avg_players": round(sum(game.players_count for game in games) / count, 1),
         "avg_rebuys": round(sum(game.rebuys for game in games) / count, 1),
-        "avg_buyin": round(sum(game.buyin for game in games) / count, 2),
         "hookah_rate": round(sum(bool(game.was_hookah) for game in games) / count * 100, 1),
     }
 
@@ -152,16 +151,18 @@ def player_summary(name: str, games: list[PokerGame]) -> dict:
 
 
 def season_start_for(day: date) -> date:
-    """Poker seasons are Jan 1–May 31 and Jun 1–Dec 31."""
-    return date(day.year, 1, 1) if day.month <= 5 else date(day.year, 6, 1)
+    """Poker seasons run from Dec 1–May 31 and Jun 1–Nov 30."""
+    if day.month in {12, 1, 2, 3, 4, 5}:
+        return date(day.year if day.month == 12 else day.year - 1, 12, 1)
+    return date(day.year, 6, 1)
 
 
 def season_end_for(start: date) -> date:
-    return date(start.year, 5, 31) if start.month == 1 else date(start.year, 12, 31)
+    return date(start.year + 1, 5, 31) if start.month == 12 else date(start.year, 11, 30)
 
 
 def previous_season_start(start: date) -> date:
-    return date(start.year - 1, 6, 1) if start.month == 1 else date(start.year, 1, 1)
+    return date(start.year, 6, 1) if start.month == 12 else date(start.year - 1, 12, 1)
 
 
 def season_label(start: date) -> str:
@@ -373,7 +374,7 @@ def seasons(_: dict = Depends(telegram_user), session: Session = Depends(db_sess
     summaries = []
     for start in sorted(starts, reverse=True):
         data = season_data(session, start)
-        podium = data["leaderboard"][:2]
+        podium = [player for player in data["leaderboard"] if player["games"] >= 5][:2]
         summaries.append({"start": data["start"], "end": data["end"], "label": data["label"], "summary": data["summary"],
                           "winner": podium[0] if podium else None, "second_place": podium[1] if len(podium) > 1 else None})
     return summaries
@@ -383,5 +384,5 @@ def seasons(_: dict = Depends(telegram_user), session: Session = Depends(db_sess
 def season(start: date | None = None, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
     start = start or season_start_for(date.today())
     if start != season_start_for(start):
-        raise HTTPException(422, "Season must start on 1 January or 1 June")
+        raise HTTPException(422, "Season must start on 1 December or 1 June")
     return season_data(session, start)
