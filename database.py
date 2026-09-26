@@ -70,6 +70,7 @@ class PokerGame(Base):
     buyin = Column(Float)
     big_blind = Column(Integer)
     was_hookah = Column(Boolean, nullable=False, default=False)
+    beer_liters = Column(Float, nullable=False, default=0)
     description = Column(String, nullable=True)
 
     # Связь с участниками
@@ -102,6 +103,9 @@ def init_db():
         if 'was_hookah' not in columns:
             with engine.begin() as connection:
                 connection.execute(text('ALTER TABLE poker_games ADD COLUMN was_hookah BOOLEAN NOT NULL DEFAULT 0'))
+        if 'beer_liters' not in columns:
+            with engine.begin() as connection:
+                connection.execute(text('ALTER TABLE poker_games ADD COLUMN beer_liters FLOAT NOT NULL DEFAULT 0'))
     return engine
 
 def get_session(engine):

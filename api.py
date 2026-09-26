@@ -88,6 +88,7 @@ class GamePayload(BaseModel):
     buyin: float = Field(gt=0)
     big_blind: int = Field(gt=0)
     was_hookah: bool = False
+    beer_liters: float = Field(default=0, ge=0, le=100)
     description: str | None = Field(default=None, max_length=2000)
 
     @field_validator("city")
@@ -105,6 +106,13 @@ class GamePayload(BaseModel):
         if len(cleaned) != len(set(cleaned)):
             raise ValueError("Participants must be unique")
         return cleaned
+
+    @field_validator("beer_liters")
+    @classmethod
+    def half_liter_steps(cls, liters: float) -> float:
+        if abs(liters * 2 - round(liters * 2)) > 1e-9:
+            raise ValueError("Beer volume must use 0.5 liter steps")
+        return liters
 
 
 class PlayerPayload(BaseModel):
@@ -158,6 +166,7 @@ def game_dict(game: PokerGame, detailed: bool = False) -> dict:
         "second_place": game.second_place, "bank": round(game.bank, 2),
         "rebuys": game.rebuys, "buyin": game.buyin, "big_blind": game.big_blind,
         "was_hookah": game.was_hookah,
+        "beer_liters": game.beer_liters,
         "description": game.description,
     }
     if detailed:
@@ -182,14 +191,15 @@ def game_averages(games: list[PokerGame]) -> dict:
     """Metrics that remain meaningful even when the game list is empty."""
     count = len(games)
     if not count:
-        return {"games": 0, "bank": 0, "avg_bank": 0, "avg_players": 0, "avg_rebuys": 0, "hookah_rate": 0}
+        return {"games": 0, "bank": 0, "avg_bank": 0, "avg_players": 0, "avg_rebuys": 0, "hookah_sessions": 0, "beer_liters": 0}
     return {
         "games": count,
         "bank": round(sum(game.bank for game in games), 2),
         "avg_bank": round(sum(game.bank for game in games) / count, 2),
         "avg_players": round(sum(game.players_count for game in games) / count, 1),
         "avg_rebuys": round(sum(game.rebuys for game in games) / count, 1),
-        "hookah_rate": round(sum(bool(game.was_hookah) for game in games) / count * 100, 1),
+        "hookah_sessions": sum(bool(game.was_hookah) for game in games),
+        "beer_liters": round(sum(game.beer_liters or 0 for game in games), 1),
     }
 
 
@@ -286,6 +296,7 @@ def save_game(payload: GamePayload, session: Session, room_id: int, game: PokerG
     game.winner, game.second_place = payload.winner, payload.second_place
     game.rebuys, game.buyin, game.big_blind = payload.rebuys, payload.buyin, payload.big_blind
     game.was_hookah = payload.was_hookah
+    game.beer_liters = payload.beer_liters
     game.bank = round((payload.players_count + payload.rebuys) * payload.buyin, 2)
     game.description = payload.description or None
     game.players.clear()
