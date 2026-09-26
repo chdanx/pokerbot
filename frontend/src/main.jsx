@@ -89,23 +89,22 @@ function Stats({players, onError}) {
 
   const month = value => new Date(`${value}-01T00:00:00`).toLocaleDateString('ru-RU', {month: 'short', year: 'numeric'});
   const setDate = (key, value) => setPeriod({...period, [key]: value});
-  const maxMonthlyBank = Math.max(...(overview?.months.map(item => item.bank) || [0]), 1);
-  const medals = ['🥇', '🥈', '🥉'];
+  const months = overview?.months || [];
+  const maxMonthlyBank = Math.max(...months.map(item => item.bank), 1);
+  const trendPoints = months.map((item, index) => `${months.length > 1 ? index / (months.length - 1) * 100 : 50},${48 - item.bank / maxMonthlyBank * 42}`).join(' ');
+  const peakMonth = months.reduce((peak, item) => !peak || item.bank > peak.bank ? item : peak, null);
 
   return <>
     <section className="section-title"><h2>Статистика</h2><button className="clear-link" onClick={() => setPeriod({date_from: '', date_to: ''})}>За всё время</button></section>
     <section className="period"><label>С даты<input type="date" value={period.date_from} onChange={e => setDate('date_from', e.target.value)}/></label><label>По дату<input type="date" value={period.date_to} onChange={e => setDate('date_to', e.target.value)}/></label></section>
     {overview && <>
       <section className="metrics stats-metrics" data-hookah={`💨 Кальян был в ${overview.summary.hookah_rate}% игр`}><Metric icon={<Gamepad2/>} label="Игр" value={overview.summary.games}/><Metric icon={<Trophy/>} label="Общий банк" value={formatMoney(overview.summary.bank)}/><Metric icon={<Users/>} label="Среднее игроков" value={overview.summary.avg_players}/><Metric icon={<Plus/>} label="Среднее ребаев" value={overview.summary.avg_rebuys}/></section>
-      <section className="section-title"><h3>Рекорды</h3></section>
-      {overview.records.biggest_game ? <>
-        <article className="record"><span>Самая крупная игра</span><strong>{formatMoney(overview.records.biggest_game.bank)}</strong><small>{new Date(`${overview.records.biggest_game.date}T00:00:00`).toLocaleDateString('ru-RU')} · {overview.records.biggest_game.city} · победил {overview.records.biggest_game.winner}</small></article>
-        <section className="win-records" aria-label="Топ игроков по выигранному банку">{overview.records.largest_wins.slice(0, 3).map((item, index) => <article key={item.name}><span className="rank">{medals[index]}</span><strong>{item.name}</strong><b>{formatMoney(item.game.bank)}</b></article>)}</section>
-      </> : <p className="empty">За этот период пока нет игр</p>}
+      <section className="section-title"><h3>Максимальный банк за период</h3></section>
+      {overview.records.biggest_game ? <article className="record"><span>Самая крупная игра</span><strong>{formatMoney(overview.records.biggest_game.bank)}</strong><small>{new Date(`${overview.records.biggest_game.date}T00:00:00`).toLocaleDateString('ru-RU')} · {overview.records.biggest_game.city} · победил {overview.records.biggest_game.winner}</small></article> : <p className="empty">За этот период пока нет игр</p>}
       <section className="section-title"><h3>Города</h3></section>
       <section className="city-list">{overview.cities.map(city => <article key={city.name}><div><strong>{city.name}</strong><small>{city.games} игр · средний банк {formatMoney(city.avg_bank)}</small></div><span><b>{city.leader.name}</b><small>{city.leader.wins} побед</small></span></article>)}</section>
       <section className="section-title"><h3>Динамика по месяцам</h3></section>
-      <section className="monthly-chart" aria-label="Банк по месяцам">{overview.months.map(item => <article key={item.month} title={`${month(item.month)}: ${formatMoney(item.bank)}`}><div className="bar-wrap"><div className="bar" style={{height: `${Math.max(item.bank / maxMonthlyBank * 100, 4)}%`}}/></div><strong>{formatMoney(item.bank)}</strong><span>{month(item.month)}</span><small>{item.games} игр · {item.avg_players} игроков</small></article>)}</section>
+      {months.length ? <section className="monthly-trend" aria-label="Банк по месяцам"><div><span>Пик: <b>{formatMoney(peakMonth.bank)}</b> · {month(peakMonth.month)}</span><svg viewBox="0 0 100 52" preserveAspectRatio="none" role="img" aria-label="Изменение банка по месяцам"><polyline points={trendPoints}/></svg><small>{month(months[0].month)} — {month(months[months.length - 1].month)}</small></div><details><summary>Показать помесячные цифры</summary><section>{months.map(item => <article key={item.month}><span>{month(item.month)}</span><b>{formatMoney(item.bank)}</b><small>{item.games} игр · {item.avg_players} игроков</small></article>)}</section></details></section> : <p className="empty">За этот период пока нет игр</p>}
     </>}
     <section className="section-title"><h3>Игроки</h3></section>
     <section className="chips">{players.map(name => <button onClick={() => setSelected(name)} className={selected === name ? 'selected' : ''} key={name}>{name}</button>)}</section>
