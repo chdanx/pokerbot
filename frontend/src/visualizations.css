@@ -1,0 +1,8 @@
+.win-records{display:grid;gap:8px;margin-top:10px}
+.win-records article{display:grid;grid-template-columns:28px 1fr auto;align-items:center;gap:9px;padding:12px 14px;border:1px solid #302d34;border-radius:14px;background:#1b1b20}
+.win-records .rank{font-size:17px}.win-records strong{font-size:14px}.win-records b{color:#ff8b85;font-size:16px;white-space:nowrap}
+.monthly-chart{display:grid;grid-template-columns:repeat(auto-fit,minmax(76px,1fr));align-items:end;gap:9px;padding:14px 10px 10px;border:1px solid #29292f;border-radius:16px;background:#1b1b20}
+.monthly-chart article{display:grid;grid-template-rows:112px auto auto auto;gap:5px;min-width:0;text-align:center}
+.bar-wrap{display:flex;align-items:end;justify-content:center;height:112px;border-bottom:1px solid #40383d}
+.bar{width:min(30px,70%);min-height:4px;border-radius:8px 8px 2px 2px;background:linear-gradient(180deg,#ff827a,#bd3f3c)}
+.monthly-chart strong{font-size:11px;color:#f7f3f2;white-space:nowrap}.monthly-chart span{font-size:11px;color:#ff8b85}.monthly-chart small{font-size:10px;line-height:1.2}
