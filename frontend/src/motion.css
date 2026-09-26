@@ -1,0 +1,11 @@
+/* Ненавязчивое ощущение живого интерфейса при смене экранов и нажатиях. */
+.tab-panel{animation:tab-enter .28s cubic-bezier(.2,.8,.2,1) both}
+@keyframes tab-enter{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
+button,.game,.chips button,.season-history button,.metric,.record,.city-list article,.monthly-trend{transition:transform .18s ease,background-color .18s ease,border-color .18s ease,box-shadow .18s ease,color .18s ease}
+button:active,.game:active,.chips button:active,.season-history button:active{transform:scale(.97)}
+.primary{box-shadow:0 8px 18px rgba(229,59,56,.2)}
+.primary:hover{transform:translateY(-1px);box-shadow:0 11px 22px rgba(229,59,56,.28)}
+.game:hover,.record:hover,.city-list article:hover{border-color:#49363c;transform:translateY(-1px)}
+.season-range{display:block;margin-top:2px;font-size:11px;color:#87838b;letter-spacing:.02em}
+.season-live{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;margin-top:15px;color:#ff9c96;font-size:10px;font-weight:800;letter-spacing:.09em}.season-live i{width:7px;height:7px;border-radius:50%;background:#ef625c;box-shadow:0 0 0 0 rgba(239,98,92,.65);animation:season-pulse 1.45s ease-out infinite}.season-live strong{padding:5px 8px;border-radius:8px;background:rgba(229,59,56,.12);color:#ffd0cd;font-size:11px;letter-spacing:0;animation:season-copy 2.2s ease-in-out infinite}@keyframes season-pulse{70%{box-shadow:0 0 0 8px rgba(239,98,92,0)}100%{box-shadow:0 0 0 0 rgba(239,98,92,0)}}@keyframes season-copy{50%{color:#fff;background:rgba(229,59,56,.25)}}
+@media (prefers-reduced-motion:reduce){.tab-panel{animation:none}button,.game,.chips button,.season-history button,.metric,.record,.city-list article,.monthly-trend{transition:none}.season-live i,.season-live strong{animation:none}}
