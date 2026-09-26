@@ -5,6 +5,7 @@ import json
 import os
 import time
 import base64
+import secrets
 from datetime import date, datetime
 from urllib.parse import parse_qsl
 
@@ -14,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from database import City, Player, PokerGame, SeasonMetadata, get_session, init_db
+from database import City, Player, PokerGame, Room, RoomMember, SeasonMetadata, get_session, init_db
 
 FIRST_SEASON_START = date(2025, 1, 1)
 FIRST_SEASON_END = date(2025, 5, 31)
@@ -54,6 +55,26 @@ def telegram_user(x_telegram_init_data: str = Header(...)) -> dict:
         return json.loads(values["user"])
     except (KeyError, json.JSONDecodeError) as error:
         raise HTTPException(401, "Telegram user is missing") from error
+
+
+def telegram_id(user: dict) -> str:
+    user_id = user.get("id")
+    if user_id is None:
+        raise HTTPException(401, "Telegram user id is missing")
+    return str(user_id)
+
+
+def room_access(
+    x_room_id: int = Header(...), user: dict = Depends(telegram_user), session: Session = Depends(db_session),
+) -> tuple[Room, RoomMember]:
+    """Resolve the selected room only if the verified Telegram user belongs to it."""
+    member = session.get(RoomMember, {"room_id": x_room_id, "telegram_id": telegram_id(user)})
+    if not member:
+        raise HTTPException(403, "Нет доступа к этой комнате")
+    room = session.get(Room, x_room_id)
+    if not room:
+        raise HTTPException(404, "Комната не найдена")
+    return room, member
 
 
 class GamePayload(BaseModel):
@@ -98,6 +119,27 @@ class PlayerPayload(BaseModel):
         return name
 
 
+class RoomPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, name: str) -> str:
+        name = name.strip()
+        if not name:
+            raise ValueError("Название комнаты не должно быть пустым")
+        return name
+
+
+class JoinRoomPayload(BaseModel):
+    code: str = Field(min_length=12, max_length=100)
+
+    @field_validator("code")
+    @classmethod
+    def clean_code(cls, code: str) -> str:
+        return code.strip().upper()
+
+
 class SeasonMetadataPayload(BaseModel):
     title: str | None = Field(default=None, max_length=120)
     image: str | None = Field(default=None, max_length=2_800_000)
@@ -121,6 +163,19 @@ def game_dict(game: PokerGame, detailed: bool = False) -> dict:
     if detailed:
         result["participants"] = sorted(player.name for player in game.players)
     return result
+
+
+def room_dict(room: Room, member: RoomMember) -> dict:
+    return {"id": room.id, "name": room.name, "role": member.role}
+
+
+def room_code() -> str:
+    # 128 bits of entropy: the invitation is a secret, not an identifier.
+    return f"POKER-{secrets.token_urlsafe(16).upper()}"
+
+
+def code_hash(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
 def game_averages(games: list[PokerGame]) -> dict:
@@ -190,10 +245,10 @@ def season_label(start: date) -> str:
     return f"{start.strftime('%d.%m.%Y')} — {season_end_for(start).strftime('%d.%m.%Y')}"
 
 
-def season_data(session: Session, start: date) -> dict:
+def season_data(session: Session, start: date, room_id: int) -> dict:
     end = season_end_for(start)
     date_filter = PokerGame.date <= end if start == FIRST_SEASON_START else PokerGame.date.between(start, end)
-    games = session.query(PokerGame).filter(date_filter).all()
+    games = session.query(PokerGame).filter(PokerGame.room_id == room_id, date_filter).all()
     names = sorted({player.name for game in games for player in game.players})
     board = []
     for name in names:
@@ -203,14 +258,14 @@ def season_data(session: Session, start: date) -> dict:
         points = (wins / len(played) * 100) + .33 * (seconds / len(played) * 100) if played else 0
         board.append({"name": name, "games": len(played), "wins": wins, "seconds": seconds, "points": round(points, 1)})
     leaderboard = sorted(board, key=lambda item: (-item["points"], -item["wins"], item["name"]))
-    metadata = session.get(SeasonMetadata, start)
+    metadata = session.get(SeasonMetadata, {"room_id": room_id, "start": start})
     return {"start": start.isoformat(), "end": end.isoformat(), "label": season_label(start),
             "title": metadata.title if metadata else None,
             "image_url": f"/api/seasons/{start.isoformat()}/image" if metadata and metadata.image_data else None,
             "summary": game_averages(games), "leaderboard": leaderboard}
 
 
-def save_game(payload: GamePayload, session: Session, game: PokerGame | None = None) -> PokerGame:
+def save_game(payload: GamePayload, session: Session, room_id: int, game: PokerGame | None = None) -> PokerGame:
     if payload.winner == payload.second_place:
         raise HTTPException(422, "Winner and second place must be different")
     if len(payload.participants) != payload.players_count:
@@ -220,13 +275,13 @@ def save_game(payload: GamePayload, session: Session, game: PokerGame | None = N
     city_name = payload.city.strip()
     # SQLite's lower() only handles ASCII reliably, so it cannot be used for
     # Russian city names. Check the exact name first, then compare in Python.
-    city = session.query(City).filter(City.name == city_name).one_or_none()
+    city = session.query(City).filter(City.room_id == room_id, City.name == city_name).one_or_none()
     if not city:
-        city = next((item for item in session.query(City).all() if item.name.casefold() == city_name.casefold()), None)
+        city = next((item for item in session.query(City).filter_by(room_id=room_id).all() if item.name.casefold() == city_name.casefold()), None)
     if not city:
-        city = City(name=city_name)
+        city = City(room_id=room_id, name=city_name)
         session.add(city)
-    game = game or PokerGame()
+    game = game or PokerGame(room_id=room_id)
     game.date, game.city, game.players_count = payload.date, city.name, payload.players_count
     game.winner, game.second_place = payload.winner, payload.second_place
     game.rebuys, game.buyin, game.big_blind = payload.rebuys, payload.buyin, payload.big_blind
@@ -235,9 +290,9 @@ def save_game(payload: GamePayload, session: Session, game: PokerGame | None = N
     game.description = payload.description or None
     game.players.clear()
     for name in payload.participants:
-        player = session.query(Player).filter_by(name=name).one_or_none()
+        player = session.query(Player).filter_by(room_id=room_id, name=name).one_or_none()
         if not player:
-            player = Player(name=name)
+            player = Player(room_id=room_id, name=name)
             session.add(player)
         game.players.append(player)
     session.add(game)
@@ -251,15 +306,62 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/rooms")
+def rooms(user: dict = Depends(telegram_user), session: Session = Depends(db_session)):
+    members = session.query(RoomMember).filter_by(telegram_id=telegram_id(user)).all()
+    return [room_dict(member.room, member) for member in members]
+
+
+@app.post("/api/rooms", status_code=201)
+def create_room(payload: RoomPayload, user: dict = Depends(telegram_user), session: Session = Depends(db_session)):
+    user_id = telegram_id(user)
+    code = room_code()
+    room = Room(name=payload.name, code_hash=code_hash(code), created_by_telegram_id=user_id)
+    session.add(room)
+    session.flush()
+    member = RoomMember(room_id=room.id, telegram_id=user_id, role="owner")
+    session.add(member)
+    session.commit()
+    return {"room": room_dict(room, member), "code": code}
+
+
+@app.post("/api/rooms/join")
+def join_room(payload: JoinRoomPayload, user: dict = Depends(telegram_user), session: Session = Depends(db_session)):
+    room = session.query(Room).filter_by(code_hash=code_hash(payload.code)).one_or_none()
+    if not room:
+        raise HTTPException(404, "Комната с таким кодом не найдена")
+    user_id = telegram_id(user)
+    member = session.get(RoomMember, {"room_id": room.id, "telegram_id": user_id})
+    if not member:
+        member = RoomMember(room_id=room.id, telegram_id=user_id, role="member")
+        session.add(member)
+        session.commit()
+    return {"room": room_dict(room, member)}
+
+
+@app.post("/api/rooms/{room_id}/code")
+def rotate_room_code(room_id: int, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
+    room, member = access
+    if room.id != room_id:
+        raise HTTPException(404, "Комната не найдена")
+    if member.role != "owner":
+        raise HTTPException(403, "Только владелец может сменить код")
+    code = room_code()
+    room.code_hash = code_hash(code)
+    session.commit()
+    return {"code": code}
+
+
 @app.get("/api/bootstrap")
-def bootstrap(_: dict = Depends(telegram_user), session: Session = Depends(db_session)):
-    games = session.query(PokerGame).order_by(PokerGame.date.desc(), PokerGame.id.desc()).limit(5).all()
-    players = session.query(Player).order_by(Player.name).all()
-    total_games = session.query(func.count(PokerGame.id)).scalar() or 0
-    total_bank = session.query(func.coalesce(func.sum(PokerGame.bank), 0)).scalar()
-    leaders = session.query(PokerGame.winner, func.count(PokerGame.id).label("wins")).group_by(PokerGame.winner).order_by(func.count(PokerGame.id).desc()).limit(3).all()
+def bootstrap(access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
+    room_id = access[0].id
+    games = session.query(PokerGame).filter_by(room_id=room_id).order_by(PokerGame.date.desc(), PokerGame.id.desc()).limit(5).all()
+    players = session.query(Player).filter_by(room_id=room_id).order_by(Player.name).all()
+    total_games = session.query(func.count(PokerGame.id)).filter(PokerGame.room_id == room_id).scalar() or 0
+    total_bank = session.query(func.coalesce(func.sum(PokerGame.bank), 0)).filter(PokerGame.room_id == room_id).scalar()
+    leaders = session.query(PokerGame.winner, func.count(PokerGame.id).label("wins")).filter(PokerGame.room_id == room_id).group_by(PokerGame.winner).order_by(func.count(PokerGame.id).desc()).limit(3).all()
     return {"recent_games": [game_dict(game) for game in games], "players": [player.name for player in players],
-            "cities": sorted({row[0] for row in session.query(PokerGame.city).all()} | {row[0] for row in session.query(City.name).all()}),
+            "cities": sorted({row[0] for row in session.query(PokerGame.city).filter_by(room_id=room_id).all()} | {row[0] for row in session.query(City.name).filter_by(room_id=room_id).all()}),
             "summary": {"games": total_games, "bank": round(total_bank, 2), "leaders": [{"name": name, "wins": wins} for name, wins in leaders]}}
 
 
@@ -267,9 +369,9 @@ def bootstrap(_: dict = Depends(telegram_user), session: Session = Depends(db_se
 def games(
     search: str = "", city: str = "", winner: str = "", participant: str = "",
     date_from: date | None = None, date_to: date | None = None,
-    limit: int = Query(50, le=100), _: dict = Depends(telegram_user), session: Session = Depends(db_session),
+    limit: int = Query(50, le=100), access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session),
 ):
-    query = session.query(PokerGame)
+    query = session.query(PokerGame).filter(PokerGame.room_id == access[0].id)
     if search:
         term = f"%{search.strip()}%"
         filters = [PokerGame.city.ilike(term), PokerGame.winner.ilike(term), PokerGame.second_place.ilike(term)]
@@ -292,29 +394,29 @@ def games(
 
 
 @app.get("/api/games/{game_id}")
-def game(game_id: int, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
-    item = session.get(PokerGame, game_id)
+def game(game_id: int, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
+    item = session.query(PokerGame).filter_by(id=game_id, room_id=access[0].id).one_or_none()
     if not item:
         raise HTTPException(404, "Game not found")
     return game_dict(item, detailed=True)
 
 
 @app.post("/api/games", status_code=201)
-def create_game(payload: GamePayload, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
-    return game_dict(save_game(payload, session), detailed=True)
+def create_game(payload: GamePayload, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
+    return game_dict(save_game(payload, session, access[0].id), detailed=True)
 
 
 @app.put("/api/games/{game_id}")
-def update_game(game_id: int, payload: GamePayload, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
-    item = session.get(PokerGame, game_id)
+def update_game(game_id: int, payload: GamePayload, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
+    item = session.query(PokerGame).filter_by(id=game_id, room_id=access[0].id).one_or_none()
     if not item:
         raise HTTPException(404, "Game not found")
-    return game_dict(save_game(payload, session, item), detailed=True)
+    return game_dict(save_game(payload, session, access[0].id, item), detailed=True)
 
 
 @app.delete("/api/games/{game_id}", status_code=204)
-def delete_game(game_id: int, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
-    item = session.get(PokerGame, game_id)
+def delete_game(game_id: int, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
+    item = session.query(PokerGame).filter_by(id=game_id, room_id=access[0].id).one_or_none()
     if not item:
         raise HTTPException(404, "Game not found")
     session.delete(item)
@@ -322,23 +424,25 @@ def delete_game(game_id: int, _: dict = Depends(telegram_user), session: Session
 
 
 @app.post("/api/players", status_code=201)
-def create_player(payload: PlayerPayload, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
-    existing = session.query(Player).filter(Player.name == payload.name).one_or_none()
+def create_player(payload: PlayerPayload, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
+    room_id = access[0].id
+    existing = session.query(Player).filter(Player.room_id == room_id, Player.name == payload.name).one_or_none()
     if not existing:
-        existing = next((item for item in session.query(Player).all() if item.name.casefold() == payload.name.casefold()), None)
+        existing = next((item for item in session.query(Player).filter_by(room_id=room_id).all() if item.name.casefold() == payload.name.casefold()), None)
     if existing:
         raise HTTPException(409, "Игрок с таким именем уже есть")
-    player = Player(name=payload.name)
+    player = Player(room_id=room_id, name=payload.name)
     session.add(player)
     session.commit()
     return {"name": player.name}
 
 
 @app.get("/api/players/{name}")
-def player_stats(name: str, date_from: date | None = None, date_to: date | None = None, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
-    if not session.query(Player).filter(Player.name == name).one_or_none():
+def player_stats(name: str, date_from: date | None = None, date_to: date | None = None, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
+    room_id = access[0].id
+    if not session.query(Player).filter(Player.room_id == room_id, Player.name == name).one_or_none():
         raise HTTPException(404, "Player not found")
-    query = session.query(PokerGame).join(PokerGame.players).filter(Player.name == name)
+    query = session.query(PokerGame).join(PokerGame.players).filter(PokerGame.room_id == room_id, Player.room_id == room_id, Player.name == name)
     all_games = query.order_by(PokerGame.date.desc(), PokerGame.id.desc()).all()
     if date_from:
         query = query.filter(PokerGame.date >= date_from)
@@ -357,8 +461,8 @@ def player_stats(name: str, date_from: date | None = None, date_to: date | None 
 
 
 @app.get("/api/stats")
-def stats_overview(date_from: date | None = None, date_to: date | None = None, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
-    query = session.query(PokerGame)
+def stats_overview(date_from: date | None = None, date_to: date | None = None, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
+    query = session.query(PokerGame).filter(PokerGame.room_id == access[0].id)
     if date_from:
         query = query.filter(PokerGame.date >= date_from)
     if date_to:
@@ -390,16 +494,17 @@ def stats_overview(date_from: date | None = None, date_to: date | None = None, _
 
 
 @app.get("/api/seasons")
-def seasons(_: dict = Depends(telegram_user), session: Session = Depends(db_session)):
+def seasons(access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
     """Short, tappable summaries of the current and completed poker seasons."""
     current_start = season_start_for(date.today())
     starts = {current_start}
-    for game_date, in session.query(PokerGame.date).all():
+    room_id = access[0].id
+    for game_date, in session.query(PokerGame.date).filter_by(room_id=room_id).all():
         starts.add(season_start_for(game_date))
-    metadata = {item.start: item for item in session.query(SeasonMetadata).all()}
+    metadata = {item.start: item for item in session.query(SeasonMetadata).filter_by(room_id=room_id).all()}
     summaries = []
     for start in sorted(starts, reverse=True):
-        data = season_data(session, start)
+        data = season_data(session, start, room_id)
         podium = [player for player in data["leaderboard"] if player["games"] >= 5][:2]
         item = metadata.get(start)
         summaries.append({"start": data["start"], "end": data["end"], "label": data["label"], "title": item.title if item else None,
@@ -409,26 +514,27 @@ def seasons(_: dict = Depends(telegram_user), session: Session = Depends(db_sess
 
 
 @app.get("/api/season")
-def season(start: date | None = None, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
+def season(start: date | None = None, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
     start = start or season_start_for(date.today())
     if start != season_start_for(start):
         raise HTTPException(422, "Season must start on 1 December or 1 June")
-    return season_data(session, start)
+    return season_data(session, start, access[0].id)
 
 
 @app.get("/api/seasons/{start}/image")
-def season_image(start: date, session: Session = Depends(db_session)):
-    metadata = session.get(SeasonMetadata, start)
+def season_image(start: date, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
+    metadata = session.get(SeasonMetadata, {"room_id": access[0].id, "start": start})
     if not metadata or not metadata.image_data:
         raise HTTPException(404, "Season image not found")
     return Response(metadata.image_data, media_type=metadata.image_mime or "image/jpeg")
 
 
 @app.put("/api/seasons/{start}/metadata")
-def update_season_metadata(start: date, payload: SeasonMetadataPayload, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
+def update_season_metadata(start: date, payload: SeasonMetadataPayload, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
     if start != season_start_for(start):
         raise HTTPException(422, "Season must start on 1 December, 1 June, or 1 January 2025")
-    metadata = session.get(SeasonMetadata, start) or SeasonMetadata(start=start)
+    room_id = access[0].id
+    metadata = session.get(SeasonMetadata, {"room_id": room_id, "start": start}) or SeasonMetadata(room_id=room_id, start=start)
     metadata.title = payload.title
     if payload.remove_image:
         metadata.image_data = metadata.image_mime = None

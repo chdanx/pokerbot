@@ -1,6 +1,6 @@
 import os
 
-from sqlalchemy import create_engine, Column, Integer, String, Date, Float, Boolean, ForeignKey, LargeBinary, Table, func, inspect, text
+from sqlalchemy import create_engine, Column, Integer, String, Date, Float, Boolean, ForeignKey, LargeBinary, Table, func, inspect, text, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import date
@@ -21,19 +21,45 @@ class Player(Base):
     __tablename__ = 'players'
 
     id = Column(Integer, primary_key=True)
-    name = Column(String, unique=True)
+    room_id = Column(Integer, ForeignKey('rooms.id'), nullable=False, index=True)
+    name = Column(String, nullable=False)
+
+    __table_args__ = (UniqueConstraint('room_id', 'name', name='uq_players_room_name'),)
 
 
 class City(Base):
     __tablename__ = 'cities'
 
     id = Column(Integer, primary_key=True)
-    name = Column(String, unique=True, nullable=False)
+    room_id = Column(Integer, ForeignKey('rooms.id'), nullable=False, index=True)
+    name = Column(String, nullable=False)
+
+    __table_args__ = (UniqueConstraint('room_id', 'name', name='uq_cities_room_name'),)
+
+
+class Room(Base):
+    __tablename__ = 'rooms'
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(120), nullable=False)
+    code_hash = Column(String(64), nullable=False, unique=True)
+    created_by_telegram_id = Column(String(32), nullable=False)
+
+
+class RoomMember(Base):
+    __tablename__ = 'room_members'
+
+    room_id = Column(Integer, ForeignKey('rooms.id'), primary_key=True)
+    telegram_id = Column(String(32), primary_key=True)
+    role = Column(String(16), nullable=False, default='member')
+
+    room = relationship('Room', backref='members')
 
 class PokerGame(Base):
     __tablename__ = 'poker_games'
 
     id = Column(Integer, primary_key=True)
+    room_id = Column(Integer, ForeignKey('rooms.id'), nullable=False, index=True)
     date = Column(Date, default=date.today())
     city = Column(String)
     players_count = Column(Integer)
@@ -53,6 +79,7 @@ class PokerGame(Base):
 class SeasonMetadata(Base):
     __tablename__ = 'season_metadata'
 
+    room_id = Column(Integer, ForeignKey('rooms.id'), primary_key=True)
     start = Column(Date, primary_key=True)
     title = Column(String(120), nullable=True)
     image_data = Column(LargeBinary, nullable=True)
@@ -61,6 +88,12 @@ class SeasonMetadata(Base):
 def init_db():
     database_url = os.getenv('DATABASE_URL', 'sqlite:///data/poker_games.db')
     engine = create_engine(database_url)
+    # Do not let a new application version partially initialise a legacy
+    # database. The explicit migration keeps the existing history intact.
+    if engine.dialect.name == 'sqlite' and inspect(engine).has_table('poker_games'):
+        columns = {column['name'] for column in inspect(engine).get_columns('poker_games')}
+        if 'room_id' not in columns:
+            raise RuntimeError('Legacy database detected. Run migrate_rooms.py before starting the application.')
     Base.metadata.create_all(engine)
     # SQLite's create_all does not add a new column to an existing production table.
     # Keep this small migration here so the deployed database gains the hookah flag safely.

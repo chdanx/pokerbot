@@ -1,0 +1,12 @@
+.room-gate{display:grid;align-content:center;gap:16px}
+.room-form,.room-list,.invitation{padding:16px;border:1px solid #3b3035;border-radius:16px;background:var(--card)}
+.room-form .primary{width:100%;justify-content:center}
+.room-list{display:grid;gap:8px}
+.room-list button{padding:14px;text-align:left;border-radius:12px;background:#27272d;color:#fff}
+.room-list small{display:block;margin-top:4px}
+.room-actions{display:grid;gap:8px}
+.room-actions button,.invitation button{padding:11px;border-radius:11px;background:#29292f;color:#ff8b85;font-weight:700}
+.room-error{margin-top:10px;color:#ff8078}
+.room-switch{display:block;margin-top:6px;padding:0;background:transparent;color:#ff8b85;font-size:12px}
+.invitation{display:grid;gap:8px;margin-top:16px}
+.invitation b{display:block;margin-top:4px;word-break:break-all;color:#ff9e98}
