@@ -253,9 +253,10 @@ def previous_season_start(start: date) -> date:
     return date(start.year, 6, 1) if start.month == 12 else date(start.year - 1, 12, 1)
 
 
-def season_label(start: date) -> str:
+def season_label(start: date, first_game_date: date | None = None) -> str:
     if start == FIRST_SEASON_START:
-        return f"Начало статистики — {season_end_for(start).strftime('%d.%m.%Y')}"
+        actual_start = first_game_date or start
+        return f"{actual_start.strftime('%d.%m.%Y')} — {season_end_for(start).strftime('%d.%m.%Y')}"
     return f"{start.strftime('%d.%m.%Y')} — {season_end_for(start).strftime('%d.%m.%Y')}"
 
 
@@ -276,11 +277,16 @@ def season_data(session: Session, start: date, room_id: int) -> dict:
     archive_results: dict[str, dict] = {}
     for game in archive_games:
         for name, place in ((game.winner, "wins"), (game.second_place, "seconds")):
-            result = archive_results.setdefault(name, {"name": name, "wins": 0, "seconds": 0})
+            result = archive_results.setdefault(name, {"name": name, "wins": 0, "seconds": 0, "bank_won": 0})
             result[place] += 1
+            if place == "wins":
+                result["bank_won"] = round(result["bank_won"] + game.bank, 2)
+    for result in archive_results.values():
+        result["top2"] = result["wins"] + result["seconds"]
     archive_results_list = sorted(archive_results.values(), key=lambda item: (-item["wins"], -item["seconds"], item["name"]))
+    first_game_date = min((game.date for game in games), default=None)
     metadata = session.get(SeasonMetadata, {"room_id": room_id, "start": start})
-    return {"start": start.isoformat(), "end": end.isoformat(), "label": season_label(start),
+    return {"start": start.isoformat(), "end": end.isoformat(), "label": season_label(start, first_game_date),
             "title": metadata.title if metadata else None,
             "image_url": f"/api/seasons/{start.isoformat()}/image" if metadata and metadata.image_data else None,
             "summary": game_averages(games), "leaderboard": leaderboard,
