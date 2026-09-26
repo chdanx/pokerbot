@@ -7,8 +7,8 @@ import './player-manager.css';
 import './visualizations.css';
 import './seasons.css';
 import './motion.css';
-import './typography.css';
 import './season-photos.css';
+import './transitions.css';
 
 const tg = window.Telegram?.WebApp;
 const api = async (path, options = {}) => {
