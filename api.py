@@ -4,16 +4,20 @@ import hmac
 import json
 import os
 import time
+import base64
 from datetime import date, datetime
 from urllib.parse import parse_qsl
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from database import City, Player, PokerGame, get_session, init_db
+from database import City, Player, PokerGame, SeasonMetadata, get_session, init_db
+
+FIRST_SEASON_START = date(2025, 1, 1)
+FIRST_SEASON_END = date(2025, 5, 31)
 
 app = FastAPI(title="Poker Stats API", version="1.0.0")
 app.add_middleware(
@@ -94,6 +98,17 @@ class PlayerPayload(BaseModel):
         return name
 
 
+class SeasonMetadataPayload(BaseModel):
+    title: str | None = Field(default=None, max_length=120)
+    image: str | None = Field(default=None, max_length=2_800_000)
+    remove_image: bool = False
+
+    @field_validator("title")
+    @classmethod
+    def clean_title(cls, title: str | None) -> str | None:
+        return title.strip() if title and title.strip() else None
+
+
 def game_dict(game: PokerGame, detailed: bool = False) -> dict:
     result = {
         "id": game.id, "date": game.date.isoformat(), "city": game.city,
@@ -152,16 +167,22 @@ def player_summary(name: str, games: list[PokerGame]) -> dict:
 
 def season_start_for(day: date) -> date:
     """Poker seasons run from Dec 1–May 31 and Jun 1–Nov 30."""
+    if day <= FIRST_SEASON_END:
+        return FIRST_SEASON_START
     if day.month in {12, 1, 2, 3, 4, 5}:
         return date(day.year if day.month == 12 else day.year - 1, 12, 1)
     return date(day.year, 6, 1)
 
 
 def season_end_for(start: date) -> date:
+    if start == FIRST_SEASON_START:
+        return FIRST_SEASON_END
     return date(start.year + 1, 5, 31) if start.month == 12 else date(start.year, 11, 30)
 
 
 def previous_season_start(start: date) -> date:
+    if start == date(2025, 6, 1):
+        return FIRST_SEASON_START
     return date(start.year, 6, 1) if start.month == 12 else date(start.year - 1, 12, 1)
 
 
@@ -171,7 +192,8 @@ def season_label(start: date) -> str:
 
 def season_data(session: Session, start: date) -> dict:
     end = season_end_for(start)
-    games = session.query(PokerGame).filter(PokerGame.date.between(start, end)).all()
+    date_filter = PokerGame.date <= end if start == FIRST_SEASON_START else PokerGame.date.between(start, end)
+    games = session.query(PokerGame).filter(date_filter).all()
     names = sorted({player.name for game in games for player in game.players})
     board = []
     for name in names:
@@ -181,7 +203,10 @@ def season_data(session: Session, start: date) -> dict:
         points = (wins / len(played) * 100) + .33 * (seconds / len(played) * 100) if played else 0
         board.append({"name": name, "games": len(played), "wins": wins, "seconds": seconds, "points": round(points, 1)})
     leaderboard = sorted(board, key=lambda item: (-item["points"], -item["wins"], item["name"]))
+    metadata = session.get(SeasonMetadata, start)
     return {"start": start.isoformat(), "end": end.isoformat(), "label": season_label(start),
+            "title": metadata.title if metadata else None,
+            "image_url": f"/api/seasons/{start.isoformat()}/image" if metadata and metadata.image_data else None,
             "summary": game_averages(games), "leaderboard": leaderboard}
 
 
@@ -371,11 +396,14 @@ def seasons(_: dict = Depends(telegram_user), session: Session = Depends(db_sess
     starts = {current_start}
     for game_date, in session.query(PokerGame.date).all():
         starts.add(season_start_for(game_date))
+    metadata = {item.start: item for item in session.query(SeasonMetadata).all()}
     summaries = []
     for start in sorted(starts, reverse=True):
         data = season_data(session, start)
         podium = [player for player in data["leaderboard"] if player["games"] >= 5][:2]
-        summaries.append({"start": data["start"], "end": data["end"], "label": data["label"], "summary": data["summary"],
+        item = metadata.get(start)
+        summaries.append({"start": data["start"], "end": data["end"], "label": data["label"], "title": item.title if item else None,
+                          "image_url": f"/api/seasons/{start.isoformat()}/image" if item and item.image_data else None, "summary": data["summary"],
                           "winner": podium[0] if podium else None, "second_place": podium[1] if len(podium) > 1 else None})
     return summaries
 
@@ -386,3 +414,34 @@ def season(start: date | None = None, _: dict = Depends(telegram_user), session:
     if start != season_start_for(start):
         raise HTTPException(422, "Season must start on 1 December or 1 June")
     return season_data(session, start)
+
+
+@app.get("/api/seasons/{start}/image")
+def season_image(start: date, session: Session = Depends(db_session)):
+    metadata = session.get(SeasonMetadata, start)
+    if not metadata or not metadata.image_data:
+        raise HTTPException(404, "Season image not found")
+    return Response(metadata.image_data, media_type=metadata.image_mime or "image/jpeg")
+
+
+@app.put("/api/seasons/{start}/metadata")
+def update_season_metadata(start: date, payload: SeasonMetadataPayload, _: dict = Depends(telegram_user), session: Session = Depends(db_session)):
+    if start != season_start_for(start):
+        raise HTTPException(422, "Season must start on 1 December, 1 June, or 1 January 2025")
+    metadata = session.get(SeasonMetadata, start) or SeasonMetadata(start=start)
+    metadata.title = payload.title
+    if payload.remove_image:
+        metadata.image_data = metadata.image_mime = None
+    if payload.image:
+        try:
+            header, encoded = payload.image.split(',', 1)
+            mime = header.removeprefix('data:').removesuffix(';base64')
+            image_data = base64.b64decode(encoded, validate=True)
+        except (ValueError, base64.binascii.Error) as error:
+            raise HTTPException(422, "Invalid image") from error
+        if mime not in {'image/jpeg', 'image/png', 'image/webp'} or not image_data or len(image_data) > 2_000_000:
+            raise HTTPException(422, "Use a PNG, JPEG, or WebP image under 2 MB")
+        metadata.image_data, metadata.image_mime = image_data, mime
+    session.add(metadata)
+    session.commit()
+    return {"title": metadata.title, "image_url": f"/api/seasons/{start.isoformat()}/image" if metadata.image_data else None}

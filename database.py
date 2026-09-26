@@ -1,6 +1,6 @@
 import os
 
-from sqlalchemy import create_engine, Column, Integer, String, Date, Float, Boolean, ForeignKey, Table, func, inspect, text
+from sqlalchemy import create_engine, Column, Integer, String, Date, Float, Boolean, ForeignKey, LargeBinary, Table, func, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import date
@@ -48,6 +48,15 @@ class PokerGame(Base):
 
     # Связь с участниками
     players = relationship("Player", secondary=game_players_association, backref="poker_games")
+
+
+class SeasonMetadata(Base):
+    __tablename__ = 'season_metadata'
+
+    start = Column(Date, primary_key=True)
+    title = Column(String(120), nullable=True)
+    image_data = Column(LargeBinary, nullable=True)
+    image_mime = Column(String(40), nullable=True)
 
 def init_db():
     database_url = os.getenv('DATABASE_URL', 'sqlite:///data/poker_games.db')
