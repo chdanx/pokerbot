@@ -83,13 +83,14 @@ class GamePayload(BaseModel):
     players_count: int = Field(ge=2, le=30)
     winner: str = Field(min_length=1, max_length=120)
     second_place: str = Field(min_length=1, max_length=120)
-    participants: list[str] = Field(min_length=2, max_length=30)
+    participants: list[str] = Field(default_factory=list, max_length=30)
     rebuys: int = Field(ge=0, le=100)
     buyin: float = Field(gt=0)
-    big_blind: int = Field(gt=0)
+    big_blind: float = Field(gt=0)
     was_hookah: bool = False
     beer_liters: float = Field(default=0, ge=0, le=100)
     description: str | None = Field(default=None, max_length=2000)
+    is_archive: bool = False
 
     @field_validator("city")
     @classmethod
@@ -168,6 +169,7 @@ def game_dict(game: PokerGame, detailed: bool = False) -> dict:
         "was_hookah": game.was_hookah,
         "beer_liters": game.beer_liters,
         "description": game.description,
+        "is_archive": game.is_archive,
     }
     if detailed:
         result["participants"] = sorted(player.name for player in game.players)
@@ -252,6 +254,8 @@ def previous_season_start(start: date) -> date:
 
 
 def season_label(start: date) -> str:
+    if start == FIRST_SEASON_START:
+        return f"Начало статистики — {season_end_for(start).strftime('%d.%m.%Y')}"
     return f"{start.strftime('%d.%m.%Y')} — {season_end_for(start).strftime('%d.%m.%Y')}"
 
 
@@ -268,19 +272,27 @@ def season_data(session: Session, start: date, room_id: int) -> dict:
         points = (wins / len(played) * 100) + .33 * (seconds / len(played) * 100) if played else 0
         board.append({"name": name, "games": len(played), "wins": wins, "seconds": seconds, "points": round(points, 1)})
     leaderboard = sorted(board, key=lambda item: (-item["points"], -item["wins"], item["name"]))
+    archive_games = [game for game in games if game.is_archive]
+    archive_results: dict[str, dict] = {}
+    for game in archive_games:
+        for name, place in ((game.winner, "wins"), (game.second_place, "seconds")):
+            result = archive_results.setdefault(name, {"name": name, "wins": 0, "seconds": 0})
+            result[place] += 1
+    archive_results_list = sorted(archive_results.values(), key=lambda item: (-item["wins"], -item["seconds"], item["name"]))
     metadata = session.get(SeasonMetadata, {"room_id": room_id, "start": start})
     return {"start": start.isoformat(), "end": end.isoformat(), "label": season_label(start),
             "title": metadata.title if metadata else None,
             "image_url": f"/api/seasons/{start.isoformat()}/image" if metadata and metadata.image_data else None,
-            "summary": game_averages(games), "leaderboard": leaderboard}
+            "summary": game_averages(games), "leaderboard": leaderboard,
+            "archive_games": len(archive_games), "archive_results": archive_results_list}
 
 
 def save_game(payload: GamePayload, session: Session, room_id: int, game: PokerGame | None = None) -> PokerGame:
     if payload.winner == payload.second_place:
         raise HTTPException(422, "Winner and second place must be different")
-    if len(payload.participants) != payload.players_count:
+    if not payload.is_archive and len(payload.participants) != payload.players_count:
         raise HTTPException(422, "The number of participants must match players_count")
-    if payload.winner not in payload.participants or payload.second_place not in payload.participants:
+    if not payload.is_archive and (payload.winner not in payload.participants or payload.second_place not in payload.participants):
         raise HTTPException(422, "Winner and second place must be among participants")
     city_name = payload.city.strip()
     # SQLite's lower() only handles ASCII reliably, so it cannot be used for
@@ -297,10 +309,11 @@ def save_game(payload: GamePayload, session: Session, room_id: int, game: PokerG
     game.rebuys, game.buyin, game.big_blind = payload.rebuys, payload.buyin, payload.big_blind
     game.was_hookah = payload.was_hookah
     game.beer_liters = payload.beer_liters
+    game.is_archive = payload.is_archive
     game.bank = round((payload.players_count + payload.rebuys) * payload.buyin, 2)
     game.description = payload.description or None
     game.players.clear()
-    for name in payload.participants:
+    for name in ([] if payload.is_archive else payload.participants):
         player = session.query(Player).filter_by(room_id=room_id, name=name).one_or_none()
         if not player:
             player = Player(room_id=room_id, name=name)
@@ -368,9 +381,10 @@ def bootstrap(access: tuple[Room, RoomMember] = Depends(room_access), session: S
     room_id = access[0].id
     games = session.query(PokerGame).filter_by(room_id=room_id).order_by(PokerGame.date.desc(), PokerGame.id.desc()).limit(5).all()
     players = session.query(Player).filter_by(room_id=room_id).order_by(Player.name).all()
-    total_games = session.query(func.count(PokerGame.id)).filter(PokerGame.room_id == room_id).scalar() or 0
-    total_bank = session.query(func.coalesce(func.sum(PokerGame.bank), 0)).filter(PokerGame.room_id == room_id).scalar()
-    leaders = session.query(PokerGame.winner, func.count(PokerGame.id).label("wins")).filter(PokerGame.room_id == room_id).group_by(PokerGame.winner).order_by(func.count(PokerGame.id).desc()).limit(3).all()
+    stats_games = session.query(PokerGame).filter(PokerGame.room_id == room_id, PokerGame.is_archive.is_(False))
+    total_games = stats_games.with_entities(func.count(PokerGame.id)).scalar() or 0
+    total_bank = stats_games.with_entities(func.coalesce(func.sum(PokerGame.bank), 0)).scalar()
+    leaders = stats_games.with_entities(PokerGame.winner, func.count(PokerGame.id).label("wins")).group_by(PokerGame.winner).order_by(func.count(PokerGame.id).desc()).limit(3).all()
     return {"recent_games": [game_dict(game) for game in games], "players": [player.name for player in players],
             "cities": sorted({row[0] for row in session.query(PokerGame.city).filter_by(room_id=room_id).all()} | {row[0] for row in session.query(City.name).filter_by(room_id=room_id).all()}),
             "summary": {"games": total_games, "bank": round(total_bank, 2), "leaders": [{"name": name, "wins": wins} for name, wins in leaders]}}
@@ -473,7 +487,7 @@ def player_stats(name: str, date_from: date | None = None, date_to: date | None 
 
 @app.get("/api/stats")
 def stats_overview(date_from: date | None = None, date_to: date | None = None, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
-    query = session.query(PokerGame).filter(PokerGame.room_id == access[0].id)
+    query = session.query(PokerGame).filter(PokerGame.room_id == access[0].id, PokerGame.is_archive.is_(False))
     if date_from:
         query = query.filter(PokerGame.date >= date_from)
     if date_to:

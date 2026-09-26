@@ -68,10 +68,14 @@ class PokerGame(Base):
     rebuys = Column(Integer)
     bank = Column(Float)
     buyin = Column(Float)
-    big_blind = Column(Integer)
+    big_blind = Column(Float)
     was_hookah = Column(Boolean, nullable=False, default=False)
     beer_liters = Column(Float, nullable=False, default=0)
     description = Column(String, nullable=True)
+    # Архивные записи содержат результат, но не подтверждённый состав игроков.
+    # Они не должны попадать в личную и общую статистику.
+    is_archive = Column(Boolean, nullable=False, default=False)
+    archive_source = Column(String(255), nullable=True)
 
     # Связь с участниками
     players = relationship("Player", secondary=game_players_association, backref="poker_games")
@@ -106,6 +110,12 @@ def init_db():
         if 'beer_liters' not in columns:
             with engine.begin() as connection:
                 connection.execute(text('ALTER TABLE poker_games ADD COLUMN beer_liters FLOAT NOT NULL DEFAULT 0'))
+        if 'is_archive' not in columns:
+            with engine.begin() as connection:
+                connection.execute(text('ALTER TABLE poker_games ADD COLUMN is_archive BOOLEAN NOT NULL DEFAULT 0'))
+        if 'archive_source' not in columns:
+            with engine.begin() as connection:
+                connection.execute(text('ALTER TABLE poker_games ADD COLUMN archive_source VARCHAR(255)'))
     return engine
 
 def get_session(engine):
