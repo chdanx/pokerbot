@@ -22,6 +22,22 @@ function SecureImage({path, alt}) { const [url, setUrl] = useState(''); useEffec
 const formatMoney = (value) => new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 0}).format(value) + ' ₽';
 const today = new Date().toISOString().slice(0, 10);
 
+function AnimatedNumber({value, format = number => number}) {
+  const target = Number(value) || 0;
+  const [current, setCurrent] = useState(0);
+  useEffect(() => {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) { setCurrent(target); return undefined; }
+    let frame;
+    const startedAt = performance.now();
+    const duration = 700;
+    const tick = now => { const progress = Math.min((now - startedAt) / duration, 1); setCurrent(target * (1 - Math.pow(1 - progress, 3)); if (progress < 1) frame = requestAnimationFrame(tick); };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [target]);
+  return format(current);
+}
+function LoadingScreen({label}) { return <main className="center loading-screen"><div className="poker-chip" aria-hidden="true"><i>♠</i></div><span>{label}</span></main>; }
+
 function App() {
   const [data, setData] = useState(null), [tab, setTab] = useState('home'), [tabDirection, setTabDirection] = useState('forward'), [games, setGames] = useState([]), [season, setSeason] = useState(null), [seasons, setSeasons] = useState([]), [seasonStart, setSeasonStart] = useState(''), [error, setError] = useState(''), [search, setSearch] = useState(''), [filters, setFilters] = useState({city: '', winner: '', participant: '', date_from: '', date_to: ''}), [form, setForm] = useState(null), [playerForm, setPlayerForm] = useState(false), [rooms, setRooms] = useState(null), [room, setRoom] = useState(null), [roomPicker, setRoomPicker] = useState(false), [invitation, setInvitation] = useState('');
   const load = async () => { try { const result = await api('/bootstrap'); setData(result); setGames(result.recent_games); } catch (e) { setError(e.message); } };
@@ -39,9 +55,9 @@ function App() {
     }
   }, [tab, seasonStart, search, filters]);
   if (error) return <main className="center"><h1>♠ Poker Stats</h1><p>{error}</p><button onClick={room ? load : loadRooms}>Повторить</button><small>Откройте приложение внутри Telegram.</small></main>;
-  if (!rooms) return <main className="center">Проверяем доступ…</main>;
+  if (!rooms) return <LoadingScreen label="Проверяем доступ…"/>;
   if (!room || roomPicker) return <RoomGate rooms={rooms} onSelect={chooseRoom} onCreated={({room: created, code}) => {setRooms([...rooms, created]); setInvitation(code); chooseRoom(created);}} onJoined={joined => {if (!rooms.some(item => item.id === joined.id)) setRooms([...rooms, joined]); chooseRoom(joined);}} onCancel={room ? () => setRoomPicker(false) : null}/>;
-  if (!data) return <main className="center">Загружаем стол…</main>;
+  if (!data) return <LoadingScreen label="Загружаем стол…"/>;
   const openForm = async (id) => { if (!id) return setForm({date: today, city: data.cities[0] || '', players_count: 2, winner: '', second_place: '', participants: [], rebuys: 0, buyin: 350, big_blind: 10, was_hookah: false, beer_liters: 0, description: '', is_archive: false}); try { setForm(await api(`/games/${id}`)); } catch(e) { setError(e.message); } };
   const navigateTo = nextTab => { const tabs = ['home', 'games', 'season', 'stats']; setTabDirection(tabs.indexOf(nextTab) > tabs.indexOf(tab) ? 'forward' : 'back'); setTab(nextTab); };
   const submit = async (payload) => { if (!payload.is_archive && payload.participants.length !== payload.players_count) return alert(`Выберите ${payload.players_count} участников. Сейчас выбрано: ${payload.participants.length}.`); try { await api(form.id ? `/games/${form.id}` : '/games', {method: form.id ? 'PUT' : 'POST', body: JSON.stringify(payload)}); tg?.HapticFeedback?.notificationOccurred('success'); setForm(null); await load(); navigateTo('games'); } catch(e) { setError(e.message); } };
@@ -65,8 +81,8 @@ function RoomGate({rooms, onSelect, onCreated, onJoined, onCancel}) {
   const submit = async event => { event.preventDefault(); setError(''); setSaving(true); try { if (mode === 'create') onCreated(await api('/rooms', {method: 'POST', body: JSON.stringify({name})})); else onJoined((await api('/rooms/join', {method: 'POST', body: JSON.stringify({code})})).room); } catch (e) {setError(e.message);} finally {setSaving(false);} };
   return <main className="room-gate"><section className="hero"><p>♠ POKER STATS</p><h2>{rooms.length && mode === 'choose' ? 'Выберите комнату' : mode === 'create' ? 'Создайте свою комнату' : 'Войдите в комнату'}</h2><span>Данные каждой компании изолированы. Доступ даёт только код приглашения.</span></section>{mode === 'choose' && <section className="room-list">{rooms.map(item => <button key={item.id} onClick={() => onSelect(item)}><strong>{item.name}</strong><small>{item.role === 'owner' ? 'Владелец' : 'Участник'}</small></button>)}</section>}{mode !== 'choose' && <form className="room-form" onSubmit={submit}>{mode === 'create' ? <label>Название комнаты<input required maxLength="120" value={name} onChange={event => setName(event.target.value)} placeholder="Например, Покер по пятницам"/></label> : <label>Код приглашения<input required value={code} onChange={event => setCode(event.target.value.toUpperCase())} placeholder="POKER-…" autoCapitalize="characters"/></label>}{error && <p className="room-error">{error}</p>}<button className="primary" disabled={saving} type="submit">{saving ? 'Подождите…' : mode === 'create' ? 'Создать комнату' : 'Войти'}</button></form>}<section className="room-actions">{mode !== 'create' && <button onClick={() => setMode('create')}>Создать комнату</button>}{mode !== 'join' && <button onClick={() => setMode('join')}>Стать частью существующей</button>}{mode !== 'choose' && rooms.length > 0 && <button onClick={() => setMode('choose')}>Мои комнаты</button>}{onCancel && <button onClick={onCancel}>Отмена</button>}</section></main>
 }
-function Home({data, onAdd, onAddPlayer, onGames}) { return <><section className="home-actions"><button onClick={onAdd}><Club size={30}/><span>Новая игра</span></button><button onClick={onAddPlayer}><UserPlus size={30}/><span>Новый игрок</span></button></section><section className="metrics"><Metric icon={<Gamepad2/>} label="Игр" value={data.summary.games}/><Metric icon={<Trophy/>} label="Общий банк" value={formatMoney(data.summary.bank)}/></section><section className="section-title"><h3>Последние игры</h3><button onClick={onGames}>Все</button></section><GameCards games={data.recent_games}/></> }
-function Metric({icon, label, value}) { return <article className="metric">{icon}<span>{label}</span><strong>{value}</strong></article> }
+function Home({data, onAdd, onAddPlayer, onGames}) { return <><section className="home-actions"><button onClick={onAdd}><Club size={30}/><span>Новая игра</span></button><button onClick={onAddPlayer}><UserPlus size={30}/><span>Новый игрок</span></button></section><section className="metrics"><Metric icon={<Gamepad2/>} label="Игр" value={data.summary.games}/><Metric icon={<Trophy/>} label="Общий банк" value={data.summary.bank} format={formatMoney} chips/></section><section className="section-title"><h3>Последние игры</h3><button onClick={onGames}>Все</button></section><GameCards games={data.recent_games}/></> }
+function Metric({icon, label, value, animated = false, format = item => item, chips = false}) { return <article className={`metric ${chips ? 'metric--bank' : ''}`}>{icon}<span>{label}</span><strong>{animated ? <AnimatedNumber value={value} format={format}/> : format(value)}</strong>{chips && <i className="chip-stack" aria-hidden="true"><b/><b/><b/></i>}</article> }
 function Games({games, search, setSearch, filters, setFilters, cities, players, onAdd, onEdit}) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const update = (key, value) => setFilters({...filters, [key]: value});
@@ -182,7 +198,7 @@ function SeasonListV2Legacy({season, seasons, selectedStart, onSelect}) {
 }
 
 function SeasonListV2Base({season, seasons, selectedStart, onSelect}) {
-  const [editing, setEditing] = useState(false), [title, setTitle] = useState(''), [image, setImage] = useState(null), [preview, setPreview] = useState(null);
+  const [editing, setEditing] = useState(false), [title, setTitle] = useState(''), [image, setImage] = useState(null), [preview, setPreview] = useState(null), [parallax, setParallax] = useState({x: 0, y: 0});
   const current = seasons.find(item => item.start === season?.start) || seasons[0];
   const selected = selectedStart ? season : null;
   const now = new Date();
@@ -192,8 +208,9 @@ function SeasonListV2Base({season, seasons, selectedStart, onSelect}) {
   useEffect(() => { setTitle(selected?.title || ''); setImage(null); setEditing(false); }, [selected?.start, selected?.title]);
   const chooseImage = event => { const file = event.target.files?.[0]; if (!file) return; if (file.size > 2000000) return alert('Выберите изображение до 2 МБ.'); const reader = new FileReader(); reader.onload = () => setImage(reader.result); reader.readAsDataURL(file); };
   const save = async event => { event.preventDefault(); await api(`/seasons/${selected.start}/metadata`, {method: 'PUT', body: JSON.stringify({title, image})}); location.reload(); };
+  const moveSeasonCard = event => { const box = event.currentTarget.getBoundingClientRect(); setParallax({x: ((event.clientX - box.left) / box.width - .5) * 7, y: ((event.clientY - box.top) / box.height - .5) * 7}); };
   return <>
-    {isCurrentSeason && <section className="season-countdown"><p>ТЕКУЩИЙ СЕЗОН</p><strong>{daysLeft} {daysLeft % 10 === 1 && daysLeft % 100 !== 11 ? 'день' : daysLeft % 10 >= 2 && daysLeft % 10 <= 4 && (daysLeft % 100 < 10 || daysLeft % 100 >= 20) ? 'дня' : 'дней'} до конца</strong><small>{current.label}</small><div className="season-live"><i/><span>СЕЗОН ИДЁТ</span></div></section>}
+    {isCurrentSeason && <section className="season-countdown season-countdown--parallax" onPointerMove={moveSeasonCard} onPointerLeave={() => setParallax({x: 0, y: 0})} style={{'--season-x': `${parallax.x}px`, '--season-y': `${parallax.y}px`}}><p>ТЕКУЩИЙ СЕЗОН</p><strong>{daysLeft} {daysLeft % 10 === 1 && daysLeft % 100 !== 11 ? 'день' : daysLeft % 10 >= 2 && daysLeft % 10 <= 4 && (daysLeft % 100 < 10 || daysLeft % 100 >= 20) ? 'дня' : 'дней'} до конца</strong><small>{current.label}</small><div className="season-live"><i/><span>СЕЗОН ИДЁТ</span></div></section>}
     <section className="section-title"><h2>Сезоны</h2></section>
     <section className="season-list">{seasons.map((item, index) => {
       const isExpanded = selectedStart === item.start && selected;
@@ -203,8 +220,8 @@ function SeasonListV2Base({season, seasons, selectedStart, onSelect}) {
           {selected.image_url && <button className="season-cover season-detail-cover" onClick={() => setPreview(selected.image_url)}><SecureImage path={selected.image_url} alt="Фото сезона"/></button>}
           <button className="season-edit-toggle" onClick={() => setEditing(!editing)}>{selected.title || selected.image_url ? 'Изменить название и фото' : 'Добавить название и фото'}</button>
           {editing && <form className="season-editor" onSubmit={save}><input value={title} onChange={event => setTitle(event.target.value)} placeholder="Название сезона" maxLength="120"/><label>Фото<input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseImage}/></label><button className="primary" type="submit">Сохранить</button></form>}
-          <div className="metrics season-metrics"><Metric icon={<Gamepad2/>} label="Игр" value={selected.summary.games}/><Metric icon={<Trophy/>} label="Общий банк" value={formatMoney(selected.summary.bank)}/><Metric icon={<Users/>} label="В среднем игроков" value={selected.summary.avg_players}/><Metric icon={<Plus/>} label="В среднем ребаев" value={selected.summary.avg_rebuys}/></div>
-          <h3>Рейтинг сезона</h3><section className="leaderboard">{selected.leaderboard.map((player, rank) => <article key={player.name}><b>{rank + 1}</b><span>{player.name}<small>{player.games} игр · {player.wins} побед · 🥈 {player.seconds}</small></span><strong>{player.points}</strong></article>)}</section>
+          <div className="metrics season-metrics"><Metric icon={<Gamepad2/>} label="Игр" value={selected.summary.games} animated/><Metric icon={<Trophy/>} label="Общий банк" value={selected.summary.bank} format={formatMoney} animated chips/><Metric icon={<Users/>} label="В среднем игроков" value={selected.summary.avg_players}/><Metric icon={<Plus/>} label="В среднем ребаев" value={selected.summary.avg_rebuys}/></div>
+          <h3>Рейтинг сезона</h3><section className="leaderboard">{selected.leaderboard.map((player, rank) => <article key={player.name} className={rank === 0 ? 'leaderboard-leader' : ''} style={{'--rank': rank}}><b>{rank + 1}</b><span>{player.name}<small>{player.games} игр · {player.wins} побед · 🥈 {player.seconds}</small></span><strong><AnimatedNumber value={player.points} format={value => value.toFixed(1)}/></strong></article>)}</section>
           <ArchiveResults season={selected}/>
         </section>}
       </article>;
