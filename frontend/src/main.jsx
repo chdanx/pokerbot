@@ -30,7 +30,7 @@ function AnimatedNumber({value, format = number => number}) {
     let frame;
     const startedAt = performance.now();
     const duration = 700;
-    const tick = now => { const progress = Math.min((now - startedAt) / duration, 1); setCurrent(target * (1 - Math.pow(1 - progress, 3)); if (progress < 1) frame = requestAnimationFrame(tick); };
+    const tick = now => { const progress = Math.min((now - startedAt) / duration, 1); setCurrent(target * (1 - Math.pow(1 - progress, 3))); if (progress < 1) frame = requestAnimationFrame(tick); };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
   }, [target]);
