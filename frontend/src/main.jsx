@@ -22,7 +22,7 @@ function SecureImage({path, alt}) { const [url, setUrl] = useState(''); useEffec
 const formatMoney = (value) => new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 0}).format(value) + ' ₽';
 const today = new Date().toISOString().slice(0, 10);
 
-function AnimatedNumber({value, format = number => number}) {
+function AnimatedNumber({value, format = number => Math.round(number)}) {
   const target = Number(value) || 0;
   const [current, setCurrent] = useState(0);
   useEffect(() => {
@@ -39,12 +39,12 @@ function AnimatedNumber({value, format = number => number}) {
 function LoadingScreen({label}) { return <main className="center loading-screen"><div className="poker-chip" aria-hidden="true"><i>♠</i></div><span>{label}</span></main>; }
 
 function App() {
-  const [data, setData] = useState(null), [tab, setTab] = useState('home'), [tabDirection, setTabDirection] = useState('forward'), [games, setGames] = useState([]), [season, setSeason] = useState(null), [seasons, setSeasons] = useState([]), [seasonStart, setSeasonStart] = useState(''), [error, setError] = useState(''), [search, setSearch] = useState(''), [filters, setFilters] = useState({city: '', winner: '', participant: '', date_from: '', date_to: ''}), [form, setForm] = useState(null), [playerForm, setPlayerForm] = useState(false), [rooms, setRooms] = useState(null), [room, setRoom] = useState(null), [roomPicker, setRoomPicker] = useState(false), [invitation, setInvitation] = useState('');
+  const [data, setData] = useState(null), [tab, setTab] = useState('home'), [tabDirection, setTabDirection] = useState('forward'), [games, setGames] = useState([]), [season, setSeason] = useState(null), [seasons, setSeasons] = useState([]), [seasonStart, setSeasonStart] = useState(''), [error, setError] = useState(''), [search, setSearch] = useState(''), [filters, setFilters] = useState({city: '', winner: '', participant: '', date_from: '', date_to: ''}), [form, setForm] = useState(null), [playerForm, setPlayerForm] = useState(false), [rooms, setRooms] = useState(null), [room, setRoom] = useState(null), [roomPicker, setRoomPicker] = useState(false), [invitation, setInvitation] = useState(''), [loadingComplete, setLoadingComplete] = useState(false);
   const load = async () => { try { const result = await api('/bootstrap'); setData(result); setGames(result.recent_games); } catch (e) { setError(e.message); } };
   const chooseRoom = selected => { activeRoomId = selected.id; localStorage.setItem('poker-active-room', String(selected.id)); setRoom(selected); setRoomPicker(false); setData(null); setError(''); };
   const loadRooms = async () => { try { const result = await api('/rooms'); setRooms(result); const selected = result.find(item => item.id === activeRoomId) || null; if (selected) chooseRoom(selected); else { activeRoomId = null; localStorage.removeItem('poker-active-room'); setRoom(null); } } catch (e) { setError(e.message); } };
   const rotateInvitation = async () => { if (!confirm('Старый код перестанет работать. Создать новый?')) return; try { const result = await api(`/rooms/${room.id}/code`, {method: 'POST'}); setInvitation(result.code); } catch (e) { setError(e.message); } };
-  useEffect(() => { tg?.ready(); tg?.expand(); tg?.setHeaderColor('#111114'); tg?.setBackgroundColor('#111114'); loadRooms(); }, []);
+  useEffect(() => { tg?.ready(); tg?.expand(); tg?.setHeaderColor('#111114'); tg?.setBackgroundColor('#111114'); loadRooms(); const timer = setTimeout(() => setLoadingComplete(true), 2000); return () => clearTimeout(timer); }, []);
   useEffect(() => { if (room) load(); }, [room?.id]);
   useEffect(() => {
     if (tab === 'season') { api(`/season${seasonStart ? `?start=${seasonStart}` : ''}`).then(setSeason).catch(e => setError(e.message)); api('/seasons').then(setSeasons).catch(e => setError(e.message)); }
@@ -55,9 +55,9 @@ function App() {
     }
   }, [tab, seasonStart, search, filters]);
   if (error) return <main className="center"><h1>♠ Poker Stats</h1><p>{error}</p><button onClick={room ? load : loadRooms}>Повторить</button><small>Откройте приложение внутри Telegram.</small></main>;
-  if (!rooms) return <LoadingScreen label="Проверяем доступ…"/>;
+  if (!rooms || !loadingComplete) return <LoadingScreen label="Проверяем доступ…"/>;
   if (!room || roomPicker) return <RoomGate rooms={rooms} onSelect={chooseRoom} onCreated={({room: created, code}) => {setRooms([...rooms, created]); setInvitation(code); chooseRoom(created);}} onJoined={joined => {if (!rooms.some(item => item.id === joined.id)) setRooms([...rooms, joined]); chooseRoom(joined);}} onCancel={room ? () => setRoomPicker(false) : null}/>;
-  if (!data) return <LoadingScreen label="Загружаем стол…"/>;
+  if (!data) return <LoadingScreen label="Загружаем статистику…"/>;
   const openForm = async (id) => { if (!id) return setForm({date: today, city: data.cities[0] || '', players_count: 2, winner: '', second_place: '', participants: [], rebuys: 0, buyin: 350, big_blind: 10, was_hookah: false, beer_liters: 0, description: '', is_archive: false}); try { setForm(await api(`/games/${id}`)); } catch(e) { setError(e.message); } };
   const navigateTo = nextTab => { const tabs = ['home', 'games', 'season', 'stats']; setTabDirection(tabs.indexOf(nextTab) > tabs.indexOf(tab) ? 'forward' : 'back'); setTab(nextTab); };
   const submit = async (payload) => { if (!payload.is_archive && payload.participants.length !== payload.players_count) return alert(`Выберите ${payload.players_count} участников. Сейчас выбрано: ${payload.participants.length}.`); try { await api(form.id ? `/games/${form.id}` : '/games', {method: form.id ? 'PUT' : 'POST', body: JSON.stringify(payload)}); tg?.HapticFeedback?.notificationOccurred('success'); setForm(null); await load(); navigateTo('games'); } catch(e) { setError(e.message); } };
