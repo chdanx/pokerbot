@@ -82,6 +82,19 @@ class PokerGame(Base):
 
     # Связь с участниками
     players = relationship("Player", secondary=game_players_association, backref="poker_games")
+    player_rebuys = relationship("GamePlayerRebuy", cascade="all, delete-orphan", back_populates="game")
+
+
+class GamePlayerRebuy(Base):
+    """Individual rebuy counts; absent rows mean that old games lack detail."""
+    __tablename__ = 'game_player_rebuys'
+
+    game_id = Column(Integer, ForeignKey('poker_games.id'), primary_key=True)
+    player_id = Column(Integer, ForeignKey('players.id'), primary_key=True)
+    count = Column(Integer, nullable=False, default=0)
+
+    game = relationship("PokerGame", back_populates="player_rebuys")
+    player = relationship("Player")
 
 
 class SeasonMetadata(Base):

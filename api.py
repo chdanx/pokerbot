@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from database import City, Player, PokerGame, Room, RoomMember, SeasonMetadata, get_session, init_db
+from database import City, GamePlayerRebuy, Player, PokerGame, Room, RoomMember, SeasonMetadata, get_session, init_db
 
 FIRST_SEASON_START = date(2025, 1, 1)
 FIRST_SEASON_END = date(2025, 5, 31)
@@ -85,6 +85,7 @@ class GamePayload(BaseModel):
     second_place: str = Field(min_length=1, max_length=120)
     participants: list[str] = Field(default_factory=list, max_length=30)
     rebuys: int = Field(ge=0, le=100)
+    player_rebuys: dict[str, int] = Field(default_factory=dict)
     buyin: float = Field(gt=0)
     big_blind: float = Field(gt=0)
     was_hookah: bool = False
@@ -106,6 +107,14 @@ class GamePayload(BaseModel):
         cleaned = [player.strip() for player in players if player.strip()]
         if len(cleaned) != len(set(cleaned)):
             raise ValueError("Participants must be unique")
+        return cleaned
+
+    @field_validator("player_rebuys")
+    @classmethod
+    def valid_rebuy_counts(cls, values: dict[str, int]) -> dict[str, int]:
+        cleaned = {name.strip(): count for name, count in values.items() if name.strip() and count > 0}
+        if any(count > 100 for count in cleaned.values()):
+            raise ValueError("Individual rebuy count must not exceed 100")
         return cleaned
 
     @field_validator("beer_liters")
@@ -174,6 +183,7 @@ def game_dict(game: PokerGame, detailed: bool = False) -> dict:
     }
     if detailed:
         result["participants"] = sorted(player.name for player in game.players)
+        result["player_rebuys"] = {item.player.name: item.count for item in game.player_rebuys if item.count}
     return result
 
 
@@ -313,6 +323,8 @@ def save_game(payload: GamePayload, session: Session, room_id: int, game: PokerG
         raise HTTPException(422, "The number of participants must match players_count")
     if not payload.is_archive and (payload.winner not in payload.participants or payload.second_place not in payload.participants):
         raise HTTPException(422, "Winner and second place must be among participants")
+    if not payload.is_archive and (not set(payload.player_rebuys).issubset(payload.participants) or sum(payload.player_rebuys.values()) != payload.rebuys):
+        raise HTTPException(422, "Individual rebuys must belong to participants and match the total")
     city_name = payload.city.strip()
     # SQLite's lower() only handles ASCII reliably, so it cannot be used for
     # Russian city names. Check the exact name first, then compare in Python.
@@ -332,12 +344,17 @@ def save_game(payload: GamePayload, session: Session, room_id: int, game: PokerG
     game.bank = round((payload.players_count + payload.rebuys) * payload.buyin, 2)
     game.description = payload.description or None
     game.players.clear()
+    game.player_rebuys.clear()
+    players_by_name = {}
     for name in ([] if payload.is_archive else payload.participants):
         player = session.query(Player).filter_by(room_id=room_id, name=name).one_or_none()
         if not player:
             player = Player(room_id=room_id, name=name)
             session.add(player)
         game.players.append(player)
+        players_by_name[name] = player
+    for name, count in payload.player_rebuys.items():
+        game.player_rebuys.append(GamePlayerRebuy(player=players_by_name[name], count=count))
     session.add(game)
     session.commit()
     session.refresh(game)
