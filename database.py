@@ -1,9 +1,9 @@
 import os
 
-from sqlalchemy import create_engine, Column, Integer, String, Date, Float, Boolean, ForeignKey, LargeBinary, Table, func, inspect, text, UniqueConstraint
+from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Float, Boolean, ForeignKey, LargeBinary, Table, func, inspect, text, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
-from datetime import date
+from datetime import date, datetime
 import matplotlib.pyplot as plt
 import io
 
@@ -76,6 +76,9 @@ class PokerGame(Base):
     # Они не должны попадать в личную и общую статистику.
     is_archive = Column(Boolean, nullable=False, default=False)
     archive_source = Column(String(255), nullable=True)
+    # This is deliberately independent from the played-on date: it lets the UI
+    # distinguish a genuinely new result from an older game entered later.
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     # Связь с участниками
     players = relationship("Player", secondary=game_players_association, backref="poker_games")
@@ -116,6 +119,12 @@ def init_db():
         if 'archive_source' not in columns:
             with engine.begin() as connection:
                 connection.execute(text('ALTER TABLE poker_games ADD COLUMN archive_source VARCHAR(255)'))
+        if 'created_at' not in columns:
+            with engine.begin() as connection:
+                connection.execute(text('ALTER TABLE poker_games ADD COLUMN created_at DATETIME'))
+                # Historical rows must not look new. Their played-on date is a
+                # sensible, deterministic creation fallback for this migration.
+                connection.execute(text("UPDATE poker_games SET created_at = date || ' 00:00:00' WHERE created_at IS NULL"))
     return engine
 
 def get_session(engine):

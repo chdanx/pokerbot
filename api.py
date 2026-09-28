@@ -165,6 +165,7 @@ def game_dict(game: PokerGame, detailed: bool = False) -> dict:
         "id": game.id, "date": game.date.isoformat(), "city": game.city,
         "players_count": game.players_count, "winner": game.winner,
         "second_place": game.second_place, "bank": round(game.bank, 2),
+        "created_at": game.created_at.isoformat() if game.created_at else None,
         "rebuys": game.rebuys, "buyin": game.buyin, "big_blind": game.big_blind,
         "was_hookah": game.was_hookah,
         "beer_liters": game.beer_liters,
@@ -272,7 +273,19 @@ def season_data(session: Session, start: date, room_id: int) -> dict:
         seconds = sum(game.second_place == name for game in played)
         points = (wins / len(played) * 100) + .33 * (seconds / len(played) * 100) if played else 0
         board.append({"name": name, "games": len(played), "wins": wins, "seconds": seconds, "points": round(points, 1)})
-    leaderboard = sorted(board, key=lambda item: (-item["points"], -item["wins"], item["name"]))
+    is_current = start == season_start_for(date.today())
+    # A completed season has a minimum attendance threshold. Keep occasional
+    # players visible, but below the eligible table so a two-game hot streak
+    # cannot outrank the season winner.
+    leaderboard = sorted(
+        board,
+        key=lambda item: (
+            0 if is_current or item["games"] >= 5 else 1,
+            -item["points"], -item["wins"], item["name"],
+        ),
+    )
+    for item in leaderboard:
+        item["eligible"] = is_current or item["games"] >= 5
     archive_games = [game for game in games if game.is_archive]
     archive_results: dict[str, dict] = {}
     for game in archive_games:
@@ -289,7 +302,7 @@ def season_data(session: Session, start: date, room_id: int) -> dict:
     return {"start": start.isoformat(), "end": end.isoformat(), "label": season_label(start, first_game_date),
             "title": metadata.title if metadata else None,
             "image_url": f"/api/seasons/{start.isoformat()}/image" if metadata and metadata.image_data else None,
-            "summary": game_averages(games), "leaderboard": leaderboard,
+            "summary": game_averages(games), "leaderboard": leaderboard, "is_current": is_current,
             "archive_games": len(archive_games), "archive_results": archive_results_list}
 
 
@@ -536,11 +549,12 @@ def seasons(access: tuple[Room, RoomMember] = Depends(room_access), session: Ses
     summaries = []
     for start in sorted(starts, reverse=True):
         data = season_data(session, start, room_id)
-        podium = [player for player in data["leaderboard"] if player["games"] >= 5][:2]
+        podium = data["leaderboard"][:2] if data["is_current"] else [player for player in data["leaderboard"] if player["eligible"]][:2]
         item = metadata.get(start)
         summaries.append({"start": data["start"], "end": data["end"], "label": data["label"], "title": item.title if item else None,
                           "image_url": f"/api/seasons/{start.isoformat()}/image" if item and item.image_data else None, "summary": data["summary"],
-                          "winner": podium[0] if podium else None, "second_place": podium[1] if len(podium) > 1 else None})
+                          "is_current": data["is_current"], "winner": podium[0] if podium else None,
+                          "second_place": podium[1] if len(podium) > 1 else None})
     return summaries
 
 
