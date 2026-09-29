@@ -18,7 +18,7 @@ from pathlib import Path
 from collections import defaultdict
 
 BASE_DIR = Path(__file__).resolve().parent
-WELCOME_IMAGE_PATH = Path(os.getenv('WELCOME_IMAGE_PATH', BASE_DIR / 'pass-bot-logo.png'))
+WELCOME_IMAGE_PATH = Path(os.getenv('WELCOME_IMAGE_PATH', BASE_DIR / 'pass-bot-logo-black.png'))
 WEB_APP_URL = os.getenv('WEB_APP_URL', '').strip()
 
 # Настройка логирования
