@@ -1,7 +1,6 @@
 import React, {useEffect, useMemo, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {BarChart3, CalendarDays, ChevronDown, Club, Cloud, Crown, Gamepad2, Pencil, Plus, Search, SlidersHorizontal, Trophy, Trash2, UserPlus, Users, X} from 'lucide-react';
-import passLogo from '../../pass-bot-logo.png';
 import './styles.css';
 import './enhancements.css';
 import './player-manager.css';
@@ -13,6 +12,7 @@ import './transitions.css';
 import './rooms.css';
 
 const tg = window.Telegram?.WebApp;
+const passLogo = '/pass-bot-logo.png';
 let activeRoomId = Number(localStorage.getItem('poker-active-room')) || null;
 const api = async (path, options = {}) => {
   const response = await fetch(`/api${path}`, { ...options, headers: {'Content-Type': 'application/json', 'X-Telegram-Init-Data': tg?.initData || '', ...(activeRoomId ? {'X-Room-Id': String(activeRoomId)} : {}), ...(options.headers || {})} });
