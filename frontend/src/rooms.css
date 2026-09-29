@@ -1,4 +1,10 @@
 .room-gate{display:grid;align-content:center;gap:16px}
+.room-gate__hero{display:flex;align-items:center;gap:16px;margin:0 0 2px;padding:17px 18px;border-radius:18px}
+.room-gate__logo{display:block;flex:none;width:112px;height:45px;object-fit:contain;object-position:left center}
+.room-gate__hero>div{min-width:0}
+.room-gate__hero h2{margin:4px 0;font-size:21px;line-height:1.12}
+.room-gate__hero span{display:block;font-size:12px;line-height:1.35}
+@media(max-width:380px){.room-gate__hero{gap:12px;padding:15px}.room-gate__logo{width:92px;height:38px}.room-gate__hero h2{font-size:19px}}
 .room-form,.room-list,.invitation{padding:16px;border:1px solid #3b3035;border-radius:16px;background:var(--card)}
 .room-form .primary{width:100%;justify-content:center}
 .room-list{display:grid;gap:8px}
