@@ -246,8 +246,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             chat_id=update.effective_chat.id,
             photo=InputFile(photo),
             caption=(
-                "♠️ Добро пожаловать в PASS Stats!\n"
-                "Здесь можно записывать результаты покерных встреч с друзьями и следить за статистикой: кто чаще выигрывает, сколько сыграно партий и как меняются результаты со временем." 
+                "♠️ Добро пожаловать в PASS Stats!\n\n"
+                "Здесь можно записывать результаты покерных встреч с друзьями и следить за статистикой: кто чаще выигрывает, сколько сыграно партий и как меняются результаты со временем.\n" 
                 "Чтобы начать, создайте первую игру и добавьте участников."
             ),
             reply_markup=app_button
@@ -259,7 +259,7 @@ async def configure_menu_button(application: Application) -> None:
     """Expose the Mini App through Telegram's persistent menu button."""
     if WEB_APP_URL:
         await application.bot.set_chat_menu_button(
-            menu_button=MenuButtonWebApp(text='Poker Stats', web_app=WebAppInfo(url=WEB_APP_URL))
+            menu_button=MenuButtonWebApp(text='PASS Stats', web_app=WebAppInfo(url=WEB_APP_URL))
         )
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
