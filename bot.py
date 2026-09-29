@@ -18,7 +18,7 @@ from pathlib import Path
 from collections import defaultdict
 
 BASE_DIR = Path(__file__).resolve().parent
-WELCOME_IMAGE_PATH = Path(os.getenv('WELCOME_IMAGE_PATH', BASE_DIR / 'hi_pic.jpg'))
+WELCOME_IMAGE_PATH = Path(os.getenv('WELCOME_IMAGE_PATH', BASE_DIR / 'pass-bot-logo.png'))
 WEB_APP_URL = os.getenv('WEB_APP_URL', '').strip()
 
 # Настройка логирования
@@ -240,16 +240,15 @@ async def delete_game_select(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not WEB_APP_URL:
         raise RuntimeError('WEB_APP_URL environment variable is required')
-    await update.message.reply_text("Откройте Poker Stats в Mini App.", reply_markup=ReplyKeyboardRemove())
-    app_button = InlineKeyboardMarkup([[InlineKeyboardButton('♠️ Открыть Poker Stats', web_app=WebAppInfo(url=WEB_APP_URL))]])
+    app_button = InlineKeyboardMarkup([[InlineKeyboardButton('♠️ PASS Stats - Открыть', web_app=WebAppInfo(url=WEB_APP_URL))]])
     with WELCOME_IMAGE_PATH.open('rb') as photo:
         await context.bot.send_photo(
             chat_id=update.effective_chat.id,
             photo=InputFile(photo),
             caption=(
-                "♠️ Poker Stats\n\n"
-                "Здесь живёт история ваших игр: результаты, банки, сезоны и личная статистика.\n"
-                "Все действия доступны только в Mini App."
+                "♠️ Добро пожаловать в PASS Stats!\n"
+                "Здесь можно записывать результаты покерных встреч с друзьями и следить за статистикой: кто чаще выигрывает, сколько сыграно партий и как меняются результаты со временем." 
+                "Чтобы начать, создайте первую игру и добавьте участников."
             ),
             reply_markup=app_button
         )
