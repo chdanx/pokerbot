@@ -11,6 +11,7 @@ import './season-photos.css';
 import './transitions.css';
 import './rooms.css';
 import './refinement.css';
+import './statistics.css';
 
 const tg = window.Telegram?.WebApp;
 const passLogo = '/pass-bot-logo.png';
@@ -47,6 +48,8 @@ function SecureImage({path, alt, roomId}) {
   return url ? <img src={url} alt={alt}/> : <span className="image-placeholder" role="status">Фото сезона</span>;
 }
 const formatMoney = (value) => new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 0}).format(value) + ' ₽';
+const formatCompactCardBank = value => formatMoney(value).replace(/\s+/g, ' ');
+const formatPayout = value => value == null ? '—' : value.toLocaleString('ru-RU', {maximumFractionDigits: 2}) + ' ₽';
 const gameDate = value => new Date(`${value}T00:00:00`).toLocaleDateString('ru-RU', {day: 'numeric', month: 'short', year: 'numeric'});
 const emptyFilters = () => ({city: '', winner: '', participant: '', date_from: '', date_to: ''});
 
@@ -65,7 +68,7 @@ function AnimatedNumber({value, format = number => Math.round(number)}) {
   return format(current);
 }
 function LoadingScreen({label}) { return <main className="center loading-screen"><div className="poker-chip" aria-hidden="true"><i>♠</i></div><span>{label}</span></main>; }
-function useRequest(path, roomId, delay = 0) {
+function useRequest(path, roomId, delay = 0, revision = 0) {
   const [result, setResult] = useState(null);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
@@ -73,13 +76,13 @@ function useRequest(path, roomId, delay = 0) {
     const controller = new AbortController();
     const timer = setTimeout(() => {
       api(path, {roomId, signal: controller.signal}).then(
-        data => { if (!controller.signal.aborted) setResult({path, roomId, attempt, data}); },
-        error => { if (!controller.signal.aborted) setResult({path, roomId, attempt, error: error.message}); },
+        data => { if (!controller.signal.aborted) setResult({path, roomId, attempt, revision, data}); },
+        error => { if (!controller.signal.aborted) setResult({path, roomId, attempt, revision, error: error.message}); },
       );
     }, delay);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [path, roomId, delay, attempt]);
-  const current = path && result?.path === path && result.roomId === roomId && result.attempt === attempt ? result : {};
+  }, [path, roomId, delay, attempt, revision]);
+  const current = path && result?.path === path && result.roomId === roomId && result.attempt === attempt && result.revision === revision ? result : {};
   return {...current, retry: () => setAttempt(value => value + 1)};
 }
 
@@ -214,7 +217,7 @@ function RoomScreen({room, onSwitch, initialCode, onDismissCode}) {
       {tab === 'home' && <Home data={data} onAdd={openNewGame} onAddPlayer={() => setPlayerForm(true)} onGames={() => setTab('games')} onGame={setDetail}/>}
       {tab === 'games' && <GameHistory version={historyVersion} roomId={room.id} options={historyOptions} setOptions={setHistoryOptions} cities={data.cities} players={data.players} onAdd={openNewGame} onEdit={setDetail}/>}
       {tab === 'season' && <RoomSeasons roomId={room.id}/>}
-      {tab === 'stats' && <Stats players={data.players} roomId={room.id}/>}
+      {tab === 'stats' && <Stats players={data.players} roomId={room.id} seasonPeriods={data.season_periods} onGame={setDetail} revision={historyVersion}/>}
     </div>
     {detail && !form && <GameDetails id={detail} roomId={room.id} onClose={() => setDetail(null)} onEdit={setForm}/>}
     {form && <GameForm game={form} players={data.players} cities={data.cities} onClose={() => setForm(null)} onSubmit={submit} onDelete={removeGame}/>}
@@ -244,7 +247,8 @@ function GameDetails({id, roomId, onClose, onEdit}) {
       <p className="game-meta">{gameDate(game.date)}{game.is_archive ? ' · Архив' : ''}</p>
       <p className="bank">Банк <b>{formatMoney(game.bank)}</b></p>
       <dl className="game-facts">
-        <dt>Победитель</dt><dd>{game.winner}</dd><dt>Второе место</dt><dd>{game.second_place}</dd>
+        <dt>Победитель</dt><dd>{game.winner}</dd><dt>Выплата за 1-е место</dt><dd>{formatPayout(game.winner_payout)}</dd>
+        <dt>Второе место</dt><dd>{game.second_place}</dd><dt>Выплата за 2-е место</dt><dd>{formatPayout(game.second_place_payout)}</dd>
         <dt>Игроков</dt><dd>{game.players_count}</dd><dt>Бай-ин</dt><dd>{formatMoney(game.buyin)}</dd>
         <dt>Ребаев</dt><dd>{game.rebuys}</dd><dt>Количество бобиков</dt><dd>{game.big_blind}</dd>
         <dt>Кальян</dt><dd>{game.was_hookah ? 'Да' : 'Нет'}</dd><dt>Пива, л</dt><dd>{game.beer_liters ?? 0}</dd>
@@ -322,57 +326,212 @@ function PlayerForm({roomId, onClose, onCreated}) {
   const submit = async event => { event.preventDefault(); if (!name.trim() || saving) return; setError(''); setSaving(true); try { await api('/players', {roomId, method: 'POST', body: JSON.stringify({name: name.trim()})}); await onCreated(); } catch (error) { setError(error.message); } finally { setSaving(false); } };
   return <div className="modal" role="dialog" aria-modal="true" aria-label="Новый игрок"><form className="player-form" onSubmit={submit}><section className="form-head"><div><p>НОВЫЙ ИГРОК</p><h2>Добавить игрока</h2></div><button type="button" aria-label="Закрыть" disabled={saving} onClick={close}>×</button></section><label>Имя игрока<input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="Введите имя" maxLength="120" required/></label>{error && <p className="inline-error" role="alert">{error}</p>}<button className="primary submit" type="submit" disabled={saving}>{saving ? 'Добавляем…' : 'Добавить игрока'}</button></form></div>
 }
-function Stats({players, roomId}) {
+const rebuyTitles = ['Король ребаев', 'Принц ребаев', 'Рыцарь ребаев'];
+const averageFormat = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});
+const showAverage = value => averageFormat.format(value);
+
+function RebuyPodium({ranking, onPlayer, average, setAverage}) {
+  const leaders = average ? ranking.by_average : ranking.by_total;
+  return <section className="rebuy-podium" aria-labelledby="rebuy-heading">
+    <div className="section-title"><h3 id="rebuy-heading">Рейтинг по ребаям</h3></div>
+    <div className="segments" aria-label="Сортировка рейтинга">
+      <button aria-pressed={!average} onClick={() => setAverage(false)}>Всего</button>
+      <button aria-pressed={average} onClick={() => setAverage(true)}>За игру</button>
+    </div>
+    {leaders.length > 0 ? <ol className="competition-podium" role="list">{leaders.map((player, index) =>
+      <li key={player.name} data-place={index + 1}>
+        <button className="rebuy-row podium-competitor" onClick={() => onPlayer(player.name)}>
+          {index === 0 && <Crown className="podium-crown" size={16} aria-hidden="true"/>}
+          <strong className="podium-name">{player.name}</strong>
+          {!average && <small className="podium-title">{rebuyTitles[index]}</small>}
+          <strong className="podium-score">{average ? showAverage(player.average) : player.total}</strong>
+          <small className="podium-games">Игр: {player.tracked_games}</small>
+          <span className="podium-step" aria-label={`${index + 1} место`}>{index + 1}</span>
+        </button>
+      </li>
+    )}</ol> : <p className="empty">{ranking.tracked_games ? 'В учтённых играх за этот период ребаев не было.' : 'За этот период нет игр с подтверждёнными данными о ребаях.'}</p>}
+    {!!ranking.games && <p className="game-meta">Учтено игр: {ranking.tracked_games} из {ranking.games}.</p>}
+  </section>;
+}
+
+function StatGameLink({game, onGame, label, value}) {
+  return <button className="stat-game-link" onClick={() => onGame(game.id)}>
+    <span><strong>{label || game.city}</strong><small>{label ? `${game.city} · ` : ''}{gameDate(game.date)}</small></span>
+    <b>{value}</b><ChevronDown size={15} aria-hidden="true"/>
+  </button>;
+}
+
+function PlayerProfile({stats, onGame}) {
+  const rebuys = stats.personal_rebuys;
+  return <section className="profile">
+    <h2>{stats.name}</h2>
+    <div className="metrics horizontal-metrics">
+      <Metric icon={<Gamepad2/>} label="Игр" value={stats.games}/>
+      <Metric icon={<Crown/>} label="Побед" value={stats.wins}/>
+      <Metric icon={<Trophy/>} label="Топ‑2" value={`${stats.top2_rate}%`}/>
+      <Metric icon={<BarChart3/>} label="Винрейт" value={`${stats.win_rate}%`}/>
+    </div>
+    <section className="section-title"><h3>Личные ребаи</h3></section>
+    {rebuys.tracked_games ? <>
+      <section className="player-facts">
+        <span>Всего ребаев <b>{rebuys.total}</b></span>
+        <span>За игру <b>{showAverage(rebuys.average)}</b></span>
+      </section>
+      {rebuys.record && <StatGameLink game={rebuys.record} onGame={onGame} label="Рекорд ребаев за игру" value={rebuys.record.personal_rebuys}/>}
+    </> : <p className="empty">За этот период нет данных о личных ребаях.</p>}
+    {!!rebuys.games && <p className="game-meta rebuy-coverage">Учтено игр: {rebuys.tracked_games} из {rebuys.games}.</p>}
+    {!!rebuys.recent_games.length && <details className="period-picker">
+      <summary>Последние игры с ребаями</summary>
+      <div className="stat-game-list">{rebuys.recent_games.map(game => <StatGameLink key={game.id} game={game} onGame={onGame} value={`+${game.personal_rebuys}`}/>)}</div>
+    </details>}
+    <section className="section-title"><h3>Результаты</h3></section>
+    <section className="player-facts">
+      <span>Выплаты за 1-е место <b>{formatPayout(stats.bank_won)}</b></span>
+      <span>Выплаты за 2-е место <b>{formatPayout(stats.second_place_payout)}</b></span>
+      <span>Лучшая серия <b>{stats.best_win_streak}</b></span>
+      <span>Текущая серия <b>{stats.current_win_streak}</b></span>
+    </section>
+    {!!stats.unknown_payouts && <p className="game-meta rebuy-coverage">Игр без данных для расчёта выплат: {stats.unknown_payouts}.</p>}
+    {stats.largest_win && <StatGameLink game={stats.largest_win} onGame={onGame} label="Крупнейшая выплата за победу" value={formatPayout(stats.largest_win.winner_payout)}/>}
+    <SeasonComparison data={stats.season_comparison}/>
+    {!!stats.recent_games.length && <>
+      <section className="section-title"><h3>Последние игры</h3></section>
+      <GameCards games={stats.recent_games} onEdit={onGame}/>
+    </>}
+  </section>;
+}
+
+function PlayerComparison({players, roomId, query, invalidPeriod, onGame, revision}) {
+  const [first, setFirst] = useState('');
+  const [second, setSecond] = useState('');
+  const params = new URLSearchParams(query);
+  params.set('first', first);
+  params.set('second', second);
+  const path = first && second && !invalidPeriod ? `/stats/compare?${params}` : null;
+  const request = useRequest(path, roomId, 0, revision);
+  const data = request.data;
+  if (players.length < 2) return <p className="empty">Для сравнения нужно два игрока в комнате.</p>;
+  const columns = [['wins', 'Победы'], ['top2', 'Топ‑2'], ['rebuys', 'Ребаи']];
+  return <>
+    <section className="compare-fields">
+      {[['Первый игрок', first, setFirst, second], ['Второй игрок', second, setSecond, first]].map(([label, name, choose, other]) =>
+        <label key={label}>{label}<select aria-label={label} value={name} onChange={event => choose(event.target.value)}>
+          <option value="">Выберите</option>
+          {players.map(player => <option key={player} value={player} disabled={player === other}>{player}</option>)}
+        </select></label>)}
+    </section>
+    {path && !data && <RequestStatus request={request}/>}
+    {data && (data.games ? <>
+      <section className="compare-result">
+        <h3>Совместные игры <b>{data.games}</b></h3>
+        <table>
+          <thead><tr><td/>{data.players.map(player => <th scope="col" key={player.name}>{player.name}</th>)}</tr></thead>
+          <tbody>{columns.map(([key, label]) => <tr key={key}><th scope="row">{label}</th>{data.players.map(player =>
+            <td key={player.name}>{player[key] ?? '—'}</td>)}</tr>)}</tbody>
+        </table>
+        <p className="game-meta">Данные о ребаях есть для {data.tracked_games} из {data.games} совместных игр.</p>
+      </section>
+      <section className="section-title"><h3>Последние встречи</h3></section>
+      <GameCards games={data.recent_games} onEdit={onGame}/>
+    </> : <p className="empty">В этом периоде нет совместных игр.</p>)}
+  </>;
+}
+
+const monthLabel = value => new Date(`${value}-01T00:00:00`).toLocaleDateString('ru-RU', {month: 'short', year: 'numeric'});
+const calendarMonth = value => Number(value.slice(0, 4)) * 12 + Number(value.slice(5));
+
+function MonthlyBankTrend({months}) {
+  const peak = months.reduce((highest, item) => item.bank > highest.bank ? item : highest);
+  const desiredStep = Math.max(peak.bank / 5, 0.01);
+  const magnitude = 10 ** Math.floor(Math.log10(desiredStep));
+  const step = magnitude * [1, 2, 2.5, 5, 10].find(factor => factor >= desiredStep / magnitude);
+  const intervalCount = Math.max(2, Math.ceil(peak.bank / step));
+  const ceiling = step * intervalCount;
+  const firstMonth = calendarMonth(months[0].month);
+  const distance = calendarMonth(months.at(-1).month) - firstMonth;
+  const points = months.map(item => ({
+    x: distance ? 3 + (calendarMonth(item.month) - firstMonth) / distance * 94 : 50,
+    y: 100 - item.bank / ceiling * 100,
+  }));
+  return <section className="monthly-trend" aria-label="Банк по месяцам">
+    <p className="trend-peak">Пик: <b>{formatPayout(peak.bank)}</b> · {monthLabel(peak.month)}</p>
+    <div className="trend-chart">
+      <ul className="trend-scale" aria-label="Шкала банка">{Array.from({length: intervalCount + 1}, (_, index) =>
+        <li key={index}>{formatPayout(ceiling - step * index)}</li>)}</ul>
+      <div className="trend-plot">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="Изменение банка по месяцам">
+          {Array.from({length: intervalCount + 1}, (_, index) => {
+            const y = index * (100 / intervalCount);
+            return <line key={index} x1="0" x2="100" y1={y} y2={y}/>;
+          })}
+          <polyline points={points.map(({x, y}) => `${x},${y}`).join(' ')}/>
+        </svg>
+        {points.map(({x, y}, index) => <i key={months[index].month} className="trend-dot" style={{left: `${x}%`, top: `${y}%`}} aria-hidden="true"/>)}
+      </div>
+    </div>
+    <p className="game-meta trend-period">{monthLabel(months[0].month)}{distance > 0 && ` — ${monthLabel(months.at(-1).month)}`}</p>
+    <details><summary>Показать помесячные цифры</summary><section>{months.map(item =>
+      <article key={item.month}><span>{monthLabel(item.month)}</span><b>{formatPayout(item.bank)}</b>
+        <small>{item.games} игр · {item.avg_players} игроков</small></article>)}</section></details>
+  </section>;
+}
+
+function Stats({players, roomId, seasonPeriods, onGame, revision}) {
   const [period, setPeriod] = useState({date_from: '', date_to: ''});
   const [view, setView] = useState('overview');
   const [selected, setSelected] = useState('');
+  const [average, setAverage] = useState(false);
+  const periodPicker = useRef(null);
+  const selectPlayer = name => { setSelected(name); setView('players'); window.scrollTo(0, 0); };
   const query = useMemo(() => {
     const params = new URLSearchParams();
     Object.entries(period).forEach(([key, value]) => value && params.set(key, value));
     return params.toString();
   }, [period]);
   const invalidPeriod = period.date_from && period.date_to && period.date_from > period.date_to;
-  const overviewRequest = useRequest(view === 'overview' && !invalidPeriod ? `/stats?${query}` : null, roomId);
-  const playerRequest = useRequest(view === 'players' && selected && !invalidPeriod ? `/players/${encodeURIComponent(selected)}?${query}` : null, roomId);
+  const overviewRequest = useRequest(view === 'overview' && !invalidPeriod ? `/stats?${query}` : null, roomId, 0, revision);
+  const playerRequest = useRequest(view === 'players' && selected && !invalidPeriod ? `/players/${encodeURIComponent(selected)}?${query}` : null, roomId, 0, revision);
   const overview = overviewRequest.data;
   const stats = playerRequest.data;
 
-  const month = value => new Date(`${value}-01T00:00:00`).toLocaleDateString('ru-RU', {month: 'short', year: 'numeric'});
   const setDate = (key, value) => setPeriod({...period, [key]: value});
-  const months = overview?.months || [];
-  const maxMonthlyBank = Math.max(...months.map(item => item.bank), 1);
-  const calendarMonth = value => Number(value.slice(0, 4)) * 12 + Number(value.slice(5));
-  const firstMonth = months.length ? calendarMonth(months[0].month) : 0;
-  const distance = months.length ? calendarMonth(months.at(-1).month) - firstMonth : 0;
-  const points = months.map(item => ({
-    x: distance ? 3 + (calendarMonth(item.month) - firstMonth) / distance * 94 : 50,
-    y: 48 - item.bank / maxMonthlyBank * 42,
-  }));
-  const trendPoints = points.map(({x, y}) => `${x},${y}`).join(' ');
-  const peakMonth = months.reduce((peak, item) => !peak || item.bank > peak.bank ? item : peak, null);
 
   return <>
-    <section className="section-title"><h2>Статистика</h2></section>
-    <div className="segments" aria-label="Тип статистики">{[['overview', 'Общая'], ['players', 'По игрокам']].map(([key, label]) => <button key={key} aria-pressed={view === key} onClick={() => setView(key)}>{label}</button>)}</div>
-    <details className="period-picker"><summary>{[period.date_from, period.date_to].filter(Boolean).map(gameDate).join(' — ') || 'Период · За всё время'}</summary><button className="clear-link" onClick={() => setPeriod({date_from: '', date_to: ''})}>За всё время</button>
-    <section className="period"><label>С даты<input type="date" value={period.date_from} onChange={e => setDate('date_from', e.target.value)}/></label><label>По дату<input type="date" value={period.date_to} onChange={e => setDate('date_to', e.target.value)}/></label></section></details>
+    <section className="section-title stats-heading"><h2>Статистика</h2></section>
+    <div className="segments stats-tabs" aria-label="Тип статистики">{[['overview', 'Общая'], ['players', 'По игрокам'], ['compare', 'Сравнение']].map(([key, label]) => <button key={key} aria-pressed={view === key} onClick={() => setView(key)}>{label}</button>)}</div>
+    <details className="period-picker stats-period" ref={periodPicker}>
+      <summary>{[period.date_from, period.date_to].filter(Boolean).map(gameDate).join(' — ') || 'Период · За всё время'}</summary>
+      <div className="period-shortcuts">{[
+        ['За всё время', {date_from: '', date_to: ''}],
+        ['Текущий сезон', seasonPeriods?.current],
+        ['Прошлый сезон', seasonPeriods?.previous],
+      ].filter(([, range]) => range).map(([label, range]) => <button key={label} onClick={() => {
+        setPeriod(range);
+        periodPicker.current.open = false;
+      }}>{label}</button>)}</div>
+      <section className="period"><label>С даты<input type="date" value={period.date_from} onChange={e => setDate('date_from', e.target.value)}/></label>
+        <label>По дату<input type="date" value={period.date_to} onChange={e => setDate('date_to', e.target.value)}/></label></section>
+    </details>
     {invalidPeriod && <p role="alert" className="inline-error">Начало периода должно быть раньше окончания.</p>}
     {!invalidPeriod && view === 'overview' && !overview && <RequestStatus request={overviewRequest}/>}
     {overview && <>
-      <section className="metrics stats-metrics"><Metric icon={<Gamepad2/>} label="Игр" value={overview.summary.games}/><Metric icon={<Trophy/>} label="Общий банк" value={formatMoney(overview.summary.bank)}/><Metric icon={<Users/>} label="Среднее игроков" value={overview.summary.avg_players}/><Metric icon={<Plus/>} label="Среднее ребаев" value={overview.summary.avg_rebuys}/></section><div className="stats-extras"><span className="quiet-stat"><Cloud size={14}/>Дымных сессий: {overview.summary.hookah_sessions}</span><span className="quiet-stat">Пива выпито: {overview.summary.beer_liters} л</span></div>
+      {overview.rebuy_rankings && <RebuyPodium ranking={overview.rebuy_rankings} onPlayer={selectPlayer} average={average} setAverage={setAverage}/>}
+      <section className="metrics stats-metrics horizontal-metrics"><Metric icon={<Gamepad2/>} label="Игр" value={overview.summary.games}/><Metric icon={<Trophy/>} label="Общий банк" value={overview.summary.bank} format={formatCompactCardBank}/><Metric icon={<Users/>} label="Среднее игроков" value={overview.summary.avg_players}/><Metric icon={<Plus/>} label="Среднее ребаев" value={overview.summary.avg_rebuys}/></section><div className="stats-extras"><span className="quiet-stat"><Cloud size={14}/>Дымных сессий: {overview.summary.hookah_sessions}</span><span className="quiet-stat">Пива выпито: {overview.summary.beer_liters} л</span></div>
       {overview.records.biggest_game ? <article className="record"><span>Рекордный банк</span><strong>{formatMoney(overview.records.biggest_game.bank)}</strong><small>{new Date(`${overview.records.biggest_game.date}T00:00:00`).toLocaleDateString('ru-RU')} · {overview.records.biggest_game.city} · победил {overview.records.biggest_game.winner}</small></article> : <p className="empty">За этот период пока нет игр</p>}
       <section className="section-title"><h3>Города</h3></section>
       <section className="city-list">{overview.cities.map(city => <article key={city.name}><div><strong>{city.name}</strong><small>{city.games} игр · средний банк {formatMoney(city.avg_bank)}</small></div><span><b>{city.leader.name}</b><small>{city.leader.wins} побед</small></span></article>)}</section>
-      <section className="section-title"><h3>Динамика по месяцам</h3></section>
-      {months.length ? <section className="monthly-trend" aria-label="Банк по месяцам"><div><span>Пик: <b>{formatMoney(peakMonth.bank)}</b> · {month(peakMonth.month)}</span><svg viewBox="0 0 100 52" preserveAspectRatio="none" role="img" aria-label="Изменение банка по месяцам"><polyline points={trendPoints}/>{points.map(({x, y}, index) => <circle key={months[index].month} cx={x} cy={y} r="1.4"/>) }</svg><small>{month(months[0].month)} — {month(months[months.length - 1].month)}</small></div><details><summary>Показать помесячные цифры</summary><section>{months.map(item => <article key={item.month}><span>{month(item.month)}</span><b>{formatMoney(item.bank)}</b><small>{item.games} игр · {item.avg_players} игроков</small></article>)}</section></details></section> : <p className="empty">За этот период пока нет игр</p>}
+      <section className="section-title stats-subheading"><h3>Динамика по месяцам</h3></section>
+      {overview.months.length ? <MonthlyBankTrend months={overview.months}/> : <p className="empty">За этот период пока нет игр</p>}
     </>}
     {view === 'players' && <>
     <section className="section-title"><h3>Игроки</h3></section>
     {!players.length && <p className="empty">В комнате пока нет игроков</p>}
     {selected && !stats && !invalidPeriod && <RequestStatus request={playerRequest}/>}
     <section className="chips">{players.map(name => <button onClick={() => setSelected(name)} className={selected === name ? 'selected' : ''} key={name}>{name}</button>)}</section>
-    {stats && <section className="profile"><h2>{stats.name}</h2><div className="metrics"><Metric icon={<Gamepad2/>} label="Игр" value={stats.games}/><Metric icon={<Crown/>} label="Побед" value={stats.wins}/><Metric icon={<Trophy/>} label="Топ‑2" value={`${stats.top2_rate}%`}/><Metric icon={<BarChart3/>} label="Винрейт" value={`${stats.win_rate}%`}/></div><section className="player-facts"><span>Выиграно банков <b>{formatMoney(stats.bank_won)}</b></span><span>Лучшая серия <b>{stats.best_win_streak} побед</b></span><span>Текущая серия <b>{stats.current_win_streak} побед</b></span></section><SeasonComparison data={stats.season_comparison}/></section>}
+    {stats && <PlayerProfile stats={stats} onGame={onGame}/>}
     </>}
+    <div hidden={view !== 'compare'}><PlayerComparison players={players} roomId={roomId} query={query}
+      invalidPeriod={invalidPeriod || view !== 'compare'} onGame={onGame} revision={revision}/></div>
   </>;
 }
 
@@ -490,7 +649,34 @@ function GameForm({game, players, cities, onClose, onSubmit, onDelete}) {
 }
 
 function roman(number) { const values = [[10,'X'],[9,'IX'],[5,'V'],[4,'IV'],[1,'I']]; let result = ''; for (const [value, symbol] of values) { while (number >= value) { result += symbol; number -= value; } } return result; }
-function ArchiveResults({season}) { if (!season?.archive_games) return null; return <section className="archive-results"><h3>Архивные результаты</h3><p>{season.archive_games} игр без подтверждённого состава. Это не рейтинг и не влияет на статистику игроков.</p><section>{season.archive_results.map(item => <article key={item.name}><strong>{item.name}<small>Топ‑2: {item.top2} · выиграно банков: {formatMoney(item.bank_won)}</small></strong><span>🥇 {item.wins} · 🥈 {item.seconds}</span></article>)}</section></section>; }
+function ArchiveResults({season}) { if (!season?.archive_games) return null; return <section className="archive-results"><h3>Архивные результаты</h3><p>{season.archive_games} игр без подтверждённого состава. Это не рейтинг и не влияет на статистику игроков.</p><section>{season.archive_results.map(item => <article key={item.name}><strong>{item.name}<small>Топ‑2: {item.top2} · выплаты: {formatPayout(item.bank_won + item.second_place_payout)}{item.unknown_payouts > 0 && ` · без данных: ${item.unknown_payouts}`}</small></strong><span>🥇 {item.wins} · 🥈 {item.seconds}</span></article>)}</section></section>; }
+function SeasonLeaderboard({players}) {
+  const leaders = players.filter(player => player.eligible).slice(0, 3);
+  const podium = leaders.length === 3 ? leaders : [];
+  const onPodium = new Set(podium.map(player => player.name));
+  return <>
+    <h3 className="season-ranking-heading">Рейтинг сезона</h3>
+    {podium.length > 0 && <ol className="competition-podium" aria-label="Три лидера сезона" role="list">{podium.map((player, index) =>
+      <li key={player.name} data-place={index + 1}>
+        <div className="podium-competitor">
+          {index === 0 && <Crown className="podium-crown" size={16} aria-hidden="true"/>}
+          <strong className="podium-name">{player.name}</strong>
+          <strong className="podium-score">{showAverage(player.points)}</strong>
+          <small className="podium-games">{player.games} игр · {player.wins} побед · 🥈 {player.seconds}</small>
+          <span className="podium-step" aria-label={`${index + 1} место`}>{index + 1}</span>
+        </div>
+      </li>
+    )}</ol>}
+    <section className="leaderboard">{players.map((player, index) => onPodium.has(player.name) ? null :
+      <article key={player.name} className={player.eligible ? '' : 'leaderboard-ineligible'}>
+        <b>{player.eligible ? index + 1 : '—'}</b>
+        <span>{player.name}{!player.eligible && <small className="ineligible-badge">Вне зачёта · нужно 5 игр</small>}
+          <small>{player.games} игр · {player.wins} побед · 🥈 {player.seconds}</small></span>
+        <strong>{showAverage(player.points)}</strong>
+      </article>)}</section>
+  </>;
+}
+
 function SeasonListV2Base({roomId, season, seasons, selectedStart, onSelect, detailRequest, onSaved}) {
   const [editing, setEditing] = useState(false), [title, setTitle] = useState(''), [image, setImage] = useState(null), [preview, setPreview] = useState(null);
   const [saving, setSaving] = useState(false), [error, setError] = useState('');
@@ -539,8 +725,8 @@ function SeasonListV2Base({roomId, season, seasons, selectedStart, onSelect, det
           {selected.image_url && <button className="season-cover season-detail-cover" onClick={() => setPreview(selected.image_url)}><SecureImage roomId={roomId} path={selected.image_url} alt="Фото сезона"/></button>}
           <button className="season-edit-toggle" onClick={() => { setEditing(!editing); setError(''); }} aria-label="Настроить название и фото сезона" aria-expanded={editing}><Pencil size={16}/> Настроить сезон</button>
           {editing && <form className="season-editor" onSubmit={save}><input value={title} onChange={event => setTitle(event.target.value)} aria-label="Название сезона" placeholder="Название сезона" maxLength="120"/><label>Фото<input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseImage}/></label>{error && <p className="inline-error" role="alert">{error}</p>}<button className="primary" type="submit" disabled={saving}>Сохранить</button></form>}
-          <div className="metrics season-metrics"><Metric icon={<Gamepad2/>} label="Игр" value={selected.summary.games} animated/><Metric icon={<Trophy/>} label="Общий банк" value={selected.summary.bank} format={formatMoney} animated chips/><Metric icon={<Users/>} label="В среднем игроков" value={selected.summary.avg_players}/><Metric icon={<Plus/>} label="В среднем ребаев" value={selected.summary.avg_rebuys}/></div>
-          {!selected.is_current && <p className="season-qualification">🏆 Победитель и 🥈 преследователь определяются среди игроков с минимум 5 играми.</p>}<h3>Рейтинг сезона</h3><section className="leaderboard">{selected.leaderboard.map((player, rank) => <article key={player.name} className={`${rank === 0 ? 'leaderboard-leader' : ''} ${!player.eligible ? 'leaderboard-ineligible' : ''}`} style={{'--rank': rank}}><b>{player.eligible ? rank + 1 : '—'}</b><span>{player.name} {!player.eligible && <small className="ineligible-badge">Вне зачёта · нужно 5 игр</small>}<small>{player.games} игр · {player.wins} побед · 🥈 {player.seconds}</small></span><strong><AnimatedNumber value={player.points} format={value => value.toFixed(1)}/></strong></article>)}</section>
+          <div className="metrics season-metrics horizontal-metrics"><Metric icon={<Gamepad2/>} label="Игр" value={selected.summary.games} animated/><Metric icon={<Trophy/>} label="Общий банк" value={selected.summary.bank} format={formatCompactCardBank} animated/><Metric icon={<Users/>} label="В среднем игроков" value={selected.summary.avg_players}/><Metric icon={<Plus/>} label="В среднем ребаев" value={selected.summary.avg_rebuys}/></div>
+          {!selected.is_current && <p className="season-qualification">🏆 Победитель и 🥈 преследователь определяются среди игроков с минимум 5 играми.</p>}<SeasonLeaderboard players={selected.leaderboard}/>
           <ArchiveResults season={selected}/>
         </section>}
       </article>;

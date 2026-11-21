@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from database import City, GamePlayerRebuy, Player, PokerGame, Room, RoomMember, SeasonMetadata, get_session, init_db
 
@@ -169,11 +169,31 @@ class SeasonMetadataPayload(BaseModel):
         return title.strip() if title and title.strip() else None
 
 
+def game_payouts(game: PokerGame) -> tuple[float | None, float | None]:
+    """Split the recorded pot using the room's payout rule."""
+    if game.rebuys is None or game.rebuys < 0 or game.bank is None or game.bank < 0:
+        return None, None
+    bank = round(game.bank, 2)
+    if game.rebuys == 0:
+        return bank, 0
+    if game.buyin is None or not 0 < game.buyin <= bank:
+        return None, None
+    second = round(game.buyin, 2)
+    return round(bank - second, 2), second
+
+
+def winning_payout_order(game: PokerGame) -> tuple[float, date, int]:
+    amount, _ = game_payouts(game)
+    return amount if amount is not None else -1, game.date, game.id
+
+
 def game_dict(game: PokerGame, detailed: bool = False) -> dict:
+    winner_payout, second_place_payout = game_payouts(game)
     result = {
         "id": game.id, "date": game.date.isoformat(), "city": game.city,
         "players_count": game.players_count, "winner": game.winner,
         "second_place": game.second_place, "bank": round(game.bank, 2),
+        "winner_payout": winner_payout, "second_place_payout": second_place_payout,
         "created_at": game.created_at.isoformat() if game.created_at else None,
         "rebuys": game.rebuys, "buyin": game.buyin, "big_blind": game.big_blind,
         "was_hookah": game.was_hookah,
@@ -210,7 +230,7 @@ def game_averages(games: list[PokerGame]) -> dict:
         "bank": round(sum(game.bank for game in games), 2),
         "avg_bank": round(sum(game.bank for game in games) / count, 2),
         "avg_players": round(sum(game.players_count for game in games) / count, 1),
-        "avg_rebuys": round(sum(game.rebuys for game in games) / count, 1),
+        "avg_rebuys": round(sum((game.rebuys or 0) for game in games) / count, 1),
         "hookah_sessions": sum(bool(game.was_hookah) for game in games),
         "beer_liters": round(sum(game.beer_liters or 0 for game in games), 1),
     }
@@ -219,6 +239,8 @@ def game_averages(games: list[PokerGame]) -> dict:
 def player_summary(name: str, games: list[PokerGame]) -> dict:
     wins = [game for game in games if game.winner == name]
     seconds = [game for game in games if game.second_place == name]
+    first_payouts = [game_payouts(game)[0] for game in wins]
+    second_payouts = [game_payouts(game)[1] for game in seconds]
     ordered = sorted(games, key=lambda game: (game.date, game.id))
     best_streak = current_streak = 0
     for game in ordered:
@@ -237,10 +259,75 @@ def player_summary(name: str, games: list[PokerGame]) -> dict:
         "games": count, "wins": len(wins), "seconds": len(seconds),
         "win_rate": round(len(wins) / count * 100, 1) if count else 0,
         "top2_rate": round((len(wins) + len(seconds)) / count * 100, 1) if count else 0,
-        "bank_won": round(sum(game.bank for game in wins), 2),
+        "bank_won": round(sum(amount for amount in first_payouts if amount is not None), 2),
+        "second_place_payout": round(sum(amount for amount in second_payouts if amount is not None), 2),
+        "unknown_payouts": first_payouts.count(None) + second_payouts.count(None),
         "best_win_streak": best_streak, "current_win_streak": current_streak,
         **{key: value for key, value in game_averages(games).items() if key not in {"games", "bank"}},
     }
+
+
+def stats_game_query(session: Session, room_id: int, date_from: date | None = None, date_to: date | None = None):
+    query = session.query(PokerGame).filter(
+        PokerGame.room_id == room_id, PokerGame.is_archive.is_(False),
+    ).options(selectinload(PokerGame.players), selectinload(PokerGame.player_rebuys))
+    if date_from:
+        query = query.filter(PokerGame.date >= date_from)
+    if date_to:
+        query = query.filter(PokerGame.date <= date_to)
+    return query
+
+
+def tracked_rebuys(game: PokerGame) -> dict[int, int] | None:
+    if game.is_archive or not game.players or len(game.players) != game.players_count or game.rebuys is None:
+        return None
+    counts = {item.player_id: item.count for item in game.player_rebuys}
+    player_ids = {player.id for player in game.players}
+    if not counts.keys() <= player_ids or sum(counts.values()) != game.rebuys:
+        return None
+    return {player_id: counts.get(player_id, 0) for player_id in player_ids}
+
+
+def rebuy_rankings(games: list[PokerGame]) -> dict:
+    players = {}
+    tracked_games = 0
+    for game in games:
+        counts = tracked_rebuys(game)
+        if counts is None:
+            continue
+        tracked_games += 1
+        for player in game.players:
+            row = players.setdefault(player.id, {"name": player.name, "total": 0, "tracked_games": 0})
+            row["total"] += counts[player.id]
+            row["tracked_games"] += 1
+
+    ranked = [row for row in players.values() if row["total"] > 0]
+    for row in ranked:
+        row["average"] = row["total"] / row["tracked_games"]
+    by_total = sorted(ranked, key=lambda row: (-row["total"], -row["average"], row["name"].casefold(), row["name"]))
+    by_average = sorted(ranked, key=lambda row: (-row["average"], -row["total"], row["name"].casefold(), row["name"]))
+    return {"by_total": by_total[:3], "by_average": by_average[:3], "tracked_games": tracked_games, "games": len(games)}
+
+
+def player_rebuy_stats(player: Player, games: list[PokerGame]) -> dict:
+    tracked_games = total = 0
+    recent_games = []
+    record = None
+    for game in games:
+        counts = tracked_rebuys(game)
+        if counts is None:
+            continue
+        tracked_games += 1
+        count = counts[player.id]
+        total += count
+        if count:
+            entry = {**game_dict(game), "personal_rebuys": count}
+            if len(recent_games) < 8:
+                recent_games.append(entry)
+            if record is None or count > record["personal_rebuys"]:
+                record = entry
+    return {"total": total, "average": total / tracked_games if tracked_games else None,
+            "tracked_games": tracked_games, "games": len(games), "record": record, "recent_games": recent_games}
 
 
 def season_start_for(day: date) -> date:
@@ -299,11 +386,19 @@ def season_data(session: Session, start: date, room_id: int) -> dict:
     archive_games = [game for game in games if game.is_archive]
     archive_results: dict[str, dict] = {}
     for game in archive_games:
-        for name, place in ((game.winner, "wins"), (game.second_place, "seconds")):
-            result = archive_results.setdefault(name, {"name": name, "wins": 0, "seconds": 0, "bank_won": 0})
+        winner_payout, second_payout = game_payouts(game)
+        for name, place, payout, amount in (
+            (game.winner, "wins", "bank_won", winner_payout),
+            (game.second_place, "seconds", "second_place_payout", second_payout),
+        ):
+            result = archive_results.setdefault(name, {
+                "name": name, "wins": 0, "seconds": 0, "bank_won": 0, "second_place_payout": 0, "unknown_payouts": 0,
+            })
             result[place] += 1
-            if place == "wins":
-                result["bank_won"] = round(result["bank_won"] + game.bank, 2)
+            if amount is None:
+                result["unknown_payouts"] += 1
+            else:
+                result[payout] = round(result[payout] + amount, 2)
     for result in archive_results.values():
         result["top2"] = result["wins"] + result["seconds"]
     archive_results_list = sorted(archive_results.values(), key=lambda item: (-item["wins"], -item["seconds"], item["name"]))
@@ -437,7 +532,14 @@ def bootstrap(access: tuple[Room, RoomMember] = Depends(room_access), session: S
     total_games = stats_games.with_entities(func.count(PokerGame.id)).scalar() or 0
     total_bank = stats_games.with_entities(func.coalesce(func.sum(PokerGame.bank), 0)).scalar()
     leaders = stats_games.with_entities(PokerGame.winner, func.count(PokerGame.id).label("wins")).group_by(PokerGame.winner).order_by(func.count(PokerGame.id).desc()).limit(3).all()
+    current_start = season_start_for(date.today())
+    previous_start = previous_season_start(current_start)
     return {"recent_games": [game_dict(game) for game in games], "players": [player.name for player in players],
+            "season_periods": {
+                "current": {"date_from": current_start.isoformat(), "date_to": season_end_for(current_start).isoformat()},
+                "previous": {"date_from": "" if previous_start == FIRST_SEASON_START else previous_start.isoformat(),
+                             "date_to": season_end_for(previous_start).isoformat()},
+            },
             "cities": sorted({row[0] for row in session.query(PokerGame.city).filter_by(room_id=room_id).all()} | {row[0] for row in session.query(City.name).filter_by(room_id=room_id).all()}),
             "summary": {"games": total_games, "bank": round(total_bank, 2), "leaders": [{"name": name, "wins": wins} for name, wins in leaders]}}
 
@@ -523,34 +625,60 @@ def create_player(payload: PlayerPayload, access: tuple[Room, RoomMember] = Depe
 @app.get("/api/players/{name:path}")
 def player_stats(name: str, date_from: date | None = None, date_to: date | None = None, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
     room_id = access[0].id
-    if not session.query(Player).filter(Player.room_id == room_id, Player.name == name).one_or_none():
+    player = session.query(Player).filter_by(room_id=room_id, name=name).one_or_none()
+    if not player:
         raise HTTPException(404, "Игрок не найден")
-    query = session.query(PokerGame).join(PokerGame.players).filter(PokerGame.room_id == room_id, Player.room_id == room_id, Player.name == name)
-    all_games = query.order_by(PokerGame.date.desc(), PokerGame.id.desc()).all()
-    if date_from:
-        query = query.filter(PokerGame.date >= date_from)
-    if date_to:
-        query = query.filter(PokerGame.date <= date_to)
-    games = query.order_by(PokerGame.date.desc(), PokerGame.id.desc()).all()
+    all_games = stats_game_query(session, room_id).filter(PokerGame.players.any(Player.id == player.id)).order_by(
+        PokerGame.date.desc(), PokerGame.id.desc(),
+    ).all()
+    games = [game for game in all_games if (not date_from or game.date >= date_from) and (not date_to or game.date <= date_to)]
     season_start = season_start_for(date.today())
     season_end = season_end_for(season_start)
     previous_start = previous_season_start(season_start)
     previous_end = season_end_for(previous_start)
     season_games = [game for game in all_games if season_start <= game.date <= season_end]
     previous_games = [game for game in all_games if previous_start <= game.date <= previous_end]
+    largest_win = max((game for game in games if game.winner == name), key=winning_payout_order, default=None)
+    if largest_win and game_payouts(largest_win)[0] is None:
+        largest_win = None
     return {"name": name, **player_summary(name, games), "recent_games": [game_dict(game) for game in games[:8]],
+            "personal_rebuys": player_rebuy_stats(player, games),
+            "largest_win": game_dict(largest_win) if largest_win else None,
             "season_comparison": {"current": player_summary(name, season_games), "previous": player_summary(name, previous_games),
                                   "start": season_start.isoformat(), "end": season_end.isoformat()}}
 
 
+@app.get("/api/stats/compare")
+def compare_players(
+    first: str, second: str, date_from: date | None = None, date_to: date | None = None,
+    access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session),
+):
+    if first == second:
+        raise HTTPException(422, "Выберите двух разных игроков")
+    room_id = access[0].id
+    players = {player.name: player for player in session.query(Player).filter(
+        Player.room_id == room_id, Player.name.in_([first, second]),
+    )}
+    if len(players) != 2:
+        raise HTTPException(404, "Игрок не найден")
+    games = stats_game_query(session, room_id, date_from, date_to).filter(
+        PokerGame.players.any(Player.id == players[first].id),
+        PokerGame.players.any(Player.id == players[second].id),
+    ).order_by(PokerGame.date.desc(), PokerGame.id.desc()).all()
+    tracked = [counts for game in games if (counts := tracked_rebuys(game)) is not None]
+    comparison = []
+    for player in (players[first], players[second]):
+        wins = sum(game.winner == player.name for game in games)
+        seconds = sum(game.second_place == player.name for game in games)
+        comparison.append({"name": player.name, "wins": wins, "top2": wins + seconds,
+                           "rebuys": sum(counts[player.id] for counts in tracked) if tracked else None})
+    return {"games": len(games), "tracked_games": len(tracked),
+            "players": comparison, "recent_games": [game_dict(game) for game in games[:8]]}
+
+
 @app.get("/api/stats")
 def stats_overview(date_from: date | None = None, date_to: date | None = None, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
-    query = session.query(PokerGame).filter(PokerGame.room_id == access[0].id, PokerGame.is_archive.is_(False))
-    if date_from:
-        query = query.filter(PokerGame.date >= date_from)
-    if date_to:
-        query = query.filter(PokerGame.date <= date_to)
-    games = query.order_by(PokerGame.date.asc(), PokerGame.id.asc()).all()
+    games = stats_game_query(session, access[0].id, date_from, date_to).order_by(PokerGame.date.asc(), PokerGame.id.asc()).all()
     by_city: dict[str, list[PokerGame]] = {}
     by_month: dict[str, list[PokerGame]] = {}
     for game in games:
@@ -567,13 +695,16 @@ def stats_overview(date_from: date | None = None, date_to: date | None = None, a
     biggest = max(games, key=lambda game: (game.bank, game.id), default=None)
     largest_wins: dict[str, PokerGame] = {}
     for game in games:
+        order = winning_payout_order(game)
+        if order[0] < 0:
+            continue
         current = largest_wins.get(game.winner)
-        if not current or (game.bank, game.id) > (current.bank, current.id):
+        if current is None or order > winning_payout_order(current):
             largest_wins[game.winner] = game
     return {"period": {"date_from": date_from.isoformat() if date_from else None, "date_to": date_to.isoformat() if date_to else None},
             "summary": game_averages(games), "cities": sorted(cities, key=lambda item: (-item["games"], item["name"])),
-            "months": months, "records": {"biggest_game": game_dict(biggest) if biggest else None,
-            "largest_wins": [{"name": name, "game": game_dict(game)} for name, game in sorted(largest_wins.items(), key=lambda item: (-item[1].bank, item[0]))]}}
+            "months": months, "rebuy_rankings": rebuy_rankings(games), "records": {"biggest_game": game_dict(biggest) if biggest else None,
+            "largest_wins": [{"name": name, "game": game_dict(game)} for name, game in sorted(largest_wins.items(), key=lambda item: (-winning_payout_order(item[1])[0], item[0]))]}}
 
 
 @app.get("/api/seasons")
