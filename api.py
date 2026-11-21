@@ -318,13 +318,22 @@ def season_data(session: Session, start: date, room_id: int) -> dict:
 
 def save_game(payload: GamePayload, session: Session, room_id: int, game: PokerGame | None = None) -> PokerGame:
     if payload.winner == payload.second_place:
-        raise HTTPException(422, "Winner and second place must be different")
+        raise HTTPException(422, "Победитель и второе место должны быть разными")
     if not payload.is_archive and len(payload.participants) != payload.players_count:
-        raise HTTPException(422, "The number of participants must match players_count")
+        raise HTTPException(422, "Число игроков должно совпадать с размером состава")
     if not payload.is_archive and (payload.winner not in payload.participants or payload.second_place not in payload.participants):
-        raise HTTPException(422, "Winner and second place must be among participants")
-    if not payload.is_archive and (not set(payload.player_rebuys).issubset(payload.participants) or sum(payload.player_rebuys.values()) != payload.rebuys):
-        raise HTTPException(422, "Individual rebuys must belong to participants and match the total")
+        raise HTTPException(422, "Победитель и второе место должны быть среди участников")
+    legacy_total_only = (
+        game is not None and not game.is_archive and game.rebuys == payload.rebuys
+        and not game.player_rebuys and not payload.player_rebuys
+    )
+    if payload.is_archive and payload.player_rebuys:
+        raise HTTPException(422, "В архивной игре ребаи не распределяются по игрокам")
+    if not payload.is_archive and not legacy_total_only and (
+        not set(payload.player_rebuys).issubset(payload.participants)
+        or sum(payload.player_rebuys.values()) != payload.rebuys
+    ):
+        raise HTTPException(422, "Распределите все ребаи между участниками")
     city_name = payload.city.strip()
     # SQLite's lower() only handles ASCII reliably, so it cannot be used for
     # Russian city names. Check the exact name first, then compare in Python.
@@ -343,8 +352,9 @@ def save_game(payload: GamePayload, session: Session, room_id: int, game: PokerG
     game.is_archive = payload.is_archive
     game.bank = round((payload.players_count + payload.rebuys) * payload.buyin, 2)
     game.description = payload.description or None
+    session.add(game)
     game.players.clear()
-    game.player_rebuys.clear()
+    old_rebuys = {item.player_id: item for item in game.player_rebuys}
     players_by_name = {}
     for name in ([] if payload.is_archive else payload.participants):
         player = session.query(Player).filter_by(room_id=room_id, name=name).one_or_none()
@@ -354,8 +364,14 @@ def save_game(payload: GamePayload, session: Session, room_id: int, game: PokerG
         game.players.append(player)
         players_by_name[name] = player
     for name, count in payload.player_rebuys.items():
-        game.player_rebuys.append(GamePlayerRebuy(player=players_by_name[name], count=count))
-    session.add(game)
+        player = players_by_name[name]
+        existing = old_rebuys.pop(player.id, None)
+        if existing is None:
+            game.player_rebuys.append(GamePlayerRebuy(player=player, count=count))
+        else:
+            existing.count = count
+    for item in old_rebuys.values():
+        game.player_rebuys.remove(item)
     session.commit()
     session.refresh(game)
     return game
@@ -430,16 +446,22 @@ def bootstrap(access: tuple[Room, RoomMember] = Depends(room_access), session: S
 def games(
     search: str = "", city: str = "", winner: str = "", participant: str = "",
     date_from: date | None = None, date_to: date | None = None,
-    limit: int = Query(50, le=100), access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session),
+    limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0), access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session),
 ):
     query = session.query(PokerGame).filter(PokerGame.room_id == access[0].id)
+    search = search.strip()
     if search:
-        term = f"%{search.strip()}%"
-        filters = [PokerGame.city.ilike(term), PokerGame.winner.ilike(term), PokerGame.second_place.ilike(term)]
-        try:
-            filters.append(PokerGame.date == datetime.strptime(search, "%d.%m.%Y").date())
-        except ValueError:
-            pass
+        columns = (PokerGame.city, PokerGame.winner, PokerGame.second_place)
+        if session.get_bind().dialect.name == "sqlite":
+            filters = [func.instr(func.unicode_casefold(column), search.casefold()) > 0 for column in columns]
+        else:
+            filters = [column.icontains(search, autoescape=True) for column in columns]
+        for pattern in ("%d.%m.%Y", "%Y-%m-%d"):
+            try:
+                filters.append(PokerGame.date == datetime.strptime(search, pattern).date())
+                break
+            except ValueError:
+                continue
         query = query.filter(or_(*filters))
     if city:
         query = query.filter(PokerGame.city == city)
@@ -451,14 +473,14 @@ def games(
         query = query.filter(PokerGame.date >= date_from)
     if date_to:
         query = query.filter(PokerGame.date <= date_to)
-    return [game_dict(game) for game in query.order_by(PokerGame.date.desc(), PokerGame.id.desc()).limit(limit).all()]
+    return [game_dict(game) for game in query.order_by(PokerGame.date.desc(), PokerGame.id.desc()).offset(offset).limit(limit).all()]
 
 
 @app.get("/api/games/{game_id}")
 def game(game_id: int, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
     item = session.query(PokerGame).filter_by(id=game_id, room_id=access[0].id).one_or_none()
     if not item:
-        raise HTTPException(404, "Game not found")
+        raise HTTPException(404, "Игра не найдена")
     return game_dict(item, detailed=True)
 
 
@@ -471,7 +493,7 @@ def create_game(payload: GamePayload, access: tuple[Room, RoomMember] = Depends(
 def update_game(game_id: int, payload: GamePayload, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
     item = session.query(PokerGame).filter_by(id=game_id, room_id=access[0].id).one_or_none()
     if not item:
-        raise HTTPException(404, "Game not found")
+        raise HTTPException(404, "Игра не найдена")
     return game_dict(save_game(payload, session, access[0].id, item), detailed=True)
 
 
@@ -479,7 +501,7 @@ def update_game(game_id: int, payload: GamePayload, access: tuple[Room, RoomMemb
 def delete_game(game_id: int, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
     item = session.query(PokerGame).filter_by(id=game_id, room_id=access[0].id).one_or_none()
     if not item:
-        raise HTTPException(404, "Game not found")
+        raise HTTPException(404, "Игра не найдена")
     session.delete(item)
     session.commit()
 
@@ -498,11 +520,11 @@ def create_player(payload: PlayerPayload, access: tuple[Room, RoomMember] = Depe
     return {"name": player.name}
 
 
-@app.get("/api/players/{name}")
+@app.get("/api/players/{name:path}")
 def player_stats(name: str, date_from: date | None = None, date_to: date | None = None, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
     room_id = access[0].id
     if not session.query(Player).filter(Player.room_id == room_id, Player.name == name).one_or_none():
-        raise HTTPException(404, "Player not found")
+        raise HTTPException(404, "Игрок не найден")
     query = session.query(PokerGame).join(PokerGame.players).filter(PokerGame.room_id == room_id, Player.room_id == room_id, Player.name == name)
     all_games = query.order_by(PokerGame.date.desc(), PokerGame.id.desc()).all()
     if date_from:
@@ -587,7 +609,7 @@ def season(start: date | None = None, access: tuple[Room, RoomMember] = Depends(
 def season_image(start: date, access: tuple[Room, RoomMember] = Depends(room_access), session: Session = Depends(db_session)):
     metadata = session.get(SeasonMetadata, {"room_id": access[0].id, "start": start})
     if not metadata or not metadata.image_data:
-        raise HTTPException(404, "Season image not found")
+        raise HTTPException(404, "Фото сезона не найдено")
     return Response(metadata.image_data, media_type=metadata.image_mime or "image/jpeg")
 
 
@@ -606,9 +628,9 @@ def update_season_metadata(start: date, payload: SeasonMetadataPayload, access: 
             mime = header.removeprefix('data:').removesuffix(';base64')
             image_data = base64.b64decode(encoded, validate=True)
         except (ValueError, base64.binascii.Error) as error:
-            raise HTTPException(422, "Invalid image") from error
+            raise HTTPException(422, "Не удалось прочитать изображение") from error
         if mime not in {'image/jpeg', 'image/png', 'image/webp'} or not image_data or len(image_data) > 2_000_000:
-            raise HTTPException(422, "Use a PNG, JPEG, or WebP image under 2 MB")
+            raise HTTPException(422, "Загрузите PNG, JPEG или WebP размером до 2 МБ")
         metadata.image_data, metadata.image_mime = image_data, mime
     session.add(metadata)
     session.commit()

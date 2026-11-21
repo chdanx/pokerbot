@@ -1,6 +1,6 @@
 import os
 
-from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Float, Boolean, ForeignKey, LargeBinary, Table, func, inspect, text, UniqueConstraint
+from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Float, Boolean, ForeignKey, LargeBinary, Table, event, func, inspect, text, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import date, datetime
@@ -109,6 +109,10 @@ class SeasonMetadata(Base):
 def init_db():
     database_url = os.getenv('DATABASE_URL', 'sqlite:///data/poker_games.db')
     engine = create_engine(database_url)
+    if engine.dialect.name == 'sqlite':
+        @event.listens_for(engine, 'connect')
+        def register_search_functions(connection, _):
+            connection.create_function('unicode_casefold', 1, lambda value: value.casefold() if value is not None else None)
     # Do not let a new application version partially initialise a legacy
     # database. The explicit migration keeps the existing history intact.
     if engine.dialect.name == 'sqlite' and inspect(engine).has_table('poker_games'):
